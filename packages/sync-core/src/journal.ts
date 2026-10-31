@@ -50,6 +50,24 @@ export class SyncJournal {
     return (path) => this.data.pathToFileId[path] ?? null;
   }
 
+  /** Drop a local file id so another id can own its path. Does not touch the vault. */
+  forgetFile(fileId: string): void {
+    const file = this.data.files[fileId];
+    if (!file) {
+      return;
+    }
+    if (this.data.pathToFileId[file.localPath] === fileId) {
+      delete this.data.pathToFileId[file.localPath];
+    }
+    for (const [operationId, pending] of Object.entries(this.data.pending)) {
+      if (pending.fileId === fileId) {
+        delete this.data.pending[operationId];
+      }
+    }
+    delete this.data.files[fileId];
+    delete this.data.conflicts[fileId];
+  }
+
   trackFile(state: FileState): void {
     const owner = this.data.pathToFileId[state.localPath];
     if (owner && owner !== state.fileId) {

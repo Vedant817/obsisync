@@ -910,7 +910,28 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     if (content === null) {
       throw new Error("blob object missing on server");
     }
-    const safePath = claimPath(fileId, normalizeLocalPath(manifest.path), rev.revisionId);
+    const desired = normalizeLocalPath(manifest.path);
+    const remoteHash = await sha256HexBytes(content);
+    const owner = deps.journal.fileIdForPath(desired);
+    if (owner && owner !== fileId) {
+      const localHash = await deps.vault.hashFile(desired);
+      if (localHash !== null && localHash === remoteHash) {
+        // The note is already on disk from a fresh scan. Keep the server id
+        // instead of writing a second copy beside it.
+        deps.journal.forgetFile(owner);
+        deps.journal.trackFile({
+          fileId,
+          localPath: desired,
+          lastAppliedRevisionId: rev.revisionId,
+          plaintextSha256: remoteHash,
+          deletedLocally: false,
+          lastSyncedSize: manifest.sizeBytes,
+        });
+        await deps.journal.persist();
+        return;
+      }
+    }
+    const safePath = claimPath(fileId, desired, rev.revisionId);
     await deps.vault.writeFile(safePath, content);
     deps.journal.trackFile({
       fileId,

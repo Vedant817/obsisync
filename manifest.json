@@ -1,7 +1,7 @@
 {
   "id": "obsisync",
   "name": "ObsiSync",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "minAppVersion": "1.5.0",
   "description": "Sync notes between devices in realtime. Each note is encrypted on the device before it is sent.",
   "author": "Vedant Mahajan",

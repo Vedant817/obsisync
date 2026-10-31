@@ -20,6 +20,14 @@
   border-radius: 8px;
 }
 
+.obsisync-settings .obsisync-url .setting-item-control {
+  flex: 1;
+}
+
+.obsisync-settings .obsisync-url input {
+  width: 100%;
+}
+
 .obsisync-settings .obsisync-qr svg {
   display: block;
   width: 220px;
