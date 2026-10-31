@@ -73,6 +73,12 @@ export interface SyncEngine {
   unresolvedConflicts(): SyncJournalData["conflicts"][string][];
   /** Plugin UX resolves divergence (spec §9.6/§11); next cycle executes it. */
   resolveConflict(fileId: FileId, choice: "local" | "remote"): Promise<void>;
+  /**
+   * The vault just deleted this path. Persist the decision before the process
+   * can exit, so the next launch uploads a tombstone instead of downloading
+   * the note again.
+   */
+  noteDeleted(path: string): Promise<void>;
 }
 
 export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
@@ -118,6 +124,9 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     }
     currentStatus = "SCANNING";
 
+    // A delete the user already made is removed again if the bytes came back,
+    // then missing-note recovery runs. Recovery must not undo that decision.
+    await enforceObservedDeletes();
     // A device that lost most of its notes must download them again.
     // Scanning first would upload those gaps as deletes.
     await restoreMissingNotes();
@@ -280,9 +289,19 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       await deps.journal.persist();
     }
 
+    // The same bytes coming back are the deleted note, not a new edit.
+    // A different hash means the user brought the note back: publish that.
+    if (pending.action === "delete" && !contentIsGone && file.deleteIntent === "observed") {
+      const sameBytesBack = file.plaintextSha256 !== null && currentHash === file.plaintextSha256;
+      if (sameBytesBack) {
+        await deps.vault.deleteFile(file.localPath);
+      }
+    }
+
     // A delete that has not left the device is cancelled when the bytes return.
     // Pushing it would tombstone a file the user just restored.
-    if (pending.action === "delete" && !contentIsGone) {
+    if (pending.action === "delete" && !contentIsGone && await deps.vault.exists(file.localPath)) {
+      deps.journal.updateFile(pending.fileId, { deleteIntent: null, deletedLocally: false });
       deps.journal.dropPending(pending.operationId);
       const revived: PendingOperation = blankPin({
         operationId: pending.pinnedRevisionId ? `op_${randomId(16)}` : pending.operationId,
@@ -580,6 +599,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     if (contentHash === null) {
       patch.deletedLocally = true;
       patch.plaintextSha256 = null;
+      patch.deleteIntent = null;
     } else {
       patch.plaintextSha256 = contentHash;
       patch.deletedLocally = false;
@@ -841,9 +861,14 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     const pending = file.pendingOperationId ? deps.journal.raw.pending[file.pendingOperationId] : undefined;
     if (rev.isTombstone || event.eventType === "tombstone") {
       const localHash = await deps.vault.hashFile(file.localPath);
-      if (localHash === null) {
+      const sameBytesBack = file.plaintextSha256 !== null && localHash === file.plaintextSha256;
+      if (localHash !== null && file.deleteIntent === "observed" && sameBytesBack) {
+        await safeDeleteLocal(file.localPath);
+      }
+      if (localHash === null || (file.deleteIntent === "observed" && sameBytesBack)) {
         deps.journal.updateFile(event.fileId, {
           deletedLocally: true,
+          deleteIntent: null,
           lastAppliedRevisionId: rev.revisionId,
           plaintextSha256: null,
           pendingOperationId: undefined,
@@ -1082,11 +1107,99 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
   }
 
   /**
+   * Record a vault delete before this process can exit. The path stays deleted
+   * across restarts until the server acks the tombstone or the bytes change.
+   */
+  async function noteDeleted(path: string): Promise<void> {
+    const norm = path.replace(/\\/g, "/").replace(/^\//, "");
+    const prefix = norm.endsWith("/") ? norm : `${norm}/`;
+    const ids = new Set<string>();
+    const direct = deps.journal.fileIdForPath(norm);
+    if (direct) {
+      ids.add(direct);
+    }
+    for (const [knownPath, fileId] of Object.entries(deps.journal.raw.pathToFileId)) {
+      if (knownPath === norm || knownPath.startsWith(prefix)) {
+        ids.add(fileId);
+      }
+    }
+    let changed = false;
+    for (const fileId of ids) {
+      const file = deps.journal.getFile(fileId);
+      if (!file || file.supersededBy) {
+        continue;
+      }
+      changed = true;
+      const pending = file.pendingOperationId ? deps.journal.raw.pending[file.pendingOperationId] : undefined;
+      if (pending && pending.action !== "delete") {
+        deps.journal.dropPending(pending.operationId);
+      }
+      deps.journal.updateFile(fileId, { deleteIntent: "observed", deletedLocally: true });
+      const current = deps.journal.getFile(fileId)!;
+      if (!current.pendingOperationId) {
+        deps.journal.putPending({
+          operationId: `op_${randomId(16)}`,
+          fileId,
+          baseRevisionId: current.lastAppliedRevisionId,
+          action: "delete",
+          localContentFingerprint: "deleted",
+          createdAt: now(),
+          stage: "captured",
+          retryCount: 0,
+        });
+      }
+    }
+    if (changed) {
+      await deps.journal.persist();
+    }
+  }
+
+  /** Same bytes as the deleted note are not a recreate. Different bytes are. */
+  async function enforceObservedDeletes(): Promise<void> {
+    let changed = false;
+    for (const file of Object.values(deps.journal.raw.files)) {
+      if (file.deleteIntent !== "observed") {
+        continue;
+      }
+      const hash = await deps.vault.hashFile(file.localPath);
+      if (hash === null) {
+        continue;
+      }
+      const same = file.plaintextSha256 !== null && hash === file.plaintextSha256;
+      if (!same) {
+        deps.journal.updateFile(file.fileId, { deleteIntent: null, deletedLocally: false });
+        const pending = file.pendingOperationId ? deps.journal.raw.pending[file.pendingOperationId] : undefined;
+        if (pending?.action === "delete") {
+          deps.journal.dropPending(pending.operationId);
+        }
+        changed = true;
+        continue;
+      }
+      await deps.vault.deleteFile(file.localPath);
+    }
+    if (changed) {
+      await deps.journal.persist();
+    }
+  }
+
+  function observedDeletePaths(): Set<string> {
+    const paths = new Set<string>();
+    for (const file of Object.values(deps.journal.raw.files)) {
+      if (file.deleteIntent === "observed") {
+        paths.add(file.localPath.replace(/\\/g, "/"));
+      }
+    }
+    return paths;
+  }
+
+  /**
    * The server still has a note this device does not. Download it before the
    * scanner can treat the gap as a delete.
-   * One or two notes this journal still calls present are a normal local delete.
-   * A note the journal already gave up on, or that lives under another file id,
-   * is downloaded even when the rest of the vault looks complete.
+   * A path the user deleted in Obsidian is never downloaded.
+   * One or two notes this journal still calls present, with no delete event,
+   * are a normal local delete. Three or more means the listing is untrusted.
+   * A note the journal already gave up on is downloaded when that path was
+   * not just deleted by the user.
    */
   async function restoreMissingNotes(): Promise<void> {
     const listed = await deps.vault.listFiles();
@@ -1123,6 +1236,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
         .filter((op) => op.action === "delete")
         .map((op) => op.fileId),
     );
+    const protectedPaths = observedDeletePaths();
     const fresh: ChangeEventWire[] = [];
     const lost: ChangeEventWire[] = [];
     // Deletes already queued for notes the server still has. One or two are
@@ -1134,6 +1248,9 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
         continue;
       }
       const known = deps.journal.getFile(event.fileId);
+      if (known?.deleteIntent === "observed") {
+        continue;
+      }
       const pending = known?.pendingOperationId ? deps.journal.raw.pending[known.pendingOperationId] : undefined;
       const queuedDelete = pendingDeletes.has(event.fileId) || pending?.action === "delete";
       if (pending && !queuedDelete) {
@@ -1163,7 +1280,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
         event.revision = rev;
       }
       const path = await manifestPath(event.fileId, rev, journalPath ?? "");
-      if (!path || onDisk.has(path)) {
+      if (!path || onDisk.has(path) || protectedPaths.has(path)) {
         continue;
       }
       const ownerId = deps.journal.fileIdForPath(path);
@@ -1179,8 +1296,14 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
         lost.push(event);
       }
     }
-    const recovering = fresh.length + held.length >= 3;
-    const todo = recovering ? [...lost, ...fresh, ...held] : lost;
+    // Observed deletes are already excluded. These thresholds are only for a
+    // gap nobody saw happen: one or two missing notes are a real delete, and
+    // three or more means this device lost the files.
+    const todo = [
+      ...lost,
+      ...(fresh.length >= 3 ? fresh : []),
+      ...(held.length >= 3 ? held : []),
+    ];
     if (todo.length === 0) {
       return;
     }
@@ -1442,6 +1565,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       return deps.journal.unresolvedConflicts();
     },
     resolveConflict,
+    noteDeleted,
   };
 }
 

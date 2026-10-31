@@ -40,7 +40,12 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
   }
 
   override onunload(): void {
-    this.stopLoops();
+    const flushing = this.realtime?.flush();
+    if (this.poll) {
+      clearInterval(this.poll);
+      this.poll = null;
+    }
+    void flushing;
   }
 
   async start(): Promise<void> {
@@ -206,6 +211,15 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
     }
   }
 
+  private async rememberDelete(path: string): Promise<void> {
+    const norm = path.replace(/\\/g, "/");
+    if (!this.engine || norm === ".obsidian" || norm.startsWith(".obsidian/")) {
+      return;
+    }
+    await this.engine.noteDeleted(norm);
+    this.realtime?.noteChange();
+  }
+
   private wireVault(): void {
     if (this.wired) {
       return;
@@ -213,7 +227,9 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
     this.wired = true;
     this.registerEvent(this.app.vault.on("create", () => this.realtime?.noteChange()));
     this.registerEvent(this.app.vault.on("modify", () => this.realtime?.noteChange()));
-    this.registerEvent(this.app.vault.on("delete", () => this.realtime?.noteChange()));
+    this.registerEvent(this.app.vault.on("delete", (file) => {
+      void this.rememberDelete(file.path);
+    }));
     this.registerEvent(this.app.vault.on("rename", () => this.realtime?.noteChange()));
   }
 }

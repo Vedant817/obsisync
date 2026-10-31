@@ -384,6 +384,57 @@ describe("deletion divergence", () => {
     expect(h.journal.pendingList()).toHaveLength(0);
   });
 
+  it("uploads two deletes that were saved before the app closed, even if the bytes came back", async () => {
+    const h = harness();
+    await h.vault.writeFile("notes/a.md", enc.encode("a"));
+    await h.vault.writeFile("notes/b.md", enc.encode("b"));
+    await h.engine.runCycle();
+    await h.engine.noteDeleted("notes/a.md");
+    await h.engine.noteDeleted("notes/b.md");
+    await h.vault.writeFile("notes/a.md", enc.encode("a"));
+    await h.vault.writeFile("notes/b.md", enc.encode("b"));
+
+    const report = await h.engine.runCycle();
+
+    expect(report.pushes).toBe(2);
+    expect(report.dataObjectPuts).toBe(0);
+    expect(await h.vault.exists("notes/a.md")).toBe(false);
+    expect(await h.vault.exists("notes/b.md")).toBe(false);
+    expect((await h.server.getFileHead(h.journal.fileIdForPath("notes/a.md")!))!.isDeleted).toBe(true);
+    expect((await h.server.getFileHead(h.journal.fileIdForPath("notes/b.md")!))!.isDeleted).toBe(true);
+  });
+
+  it("keeps a note the user wrote again after deleting it", async () => {
+    const h = harness();
+    await h.vault.writeFile("notes/a.md", enc.encode("a"));
+    await h.engine.runCycle();
+    await h.engine.noteDeleted("notes/a.md");
+    await h.vault.writeFile("notes/a.md", enc.encode("rewritten"));
+
+    const report = await h.engine.runCycle();
+
+    expect(report.pushes).toBe(1);
+    expect(dec.decode(await h.vault.readFile("notes/a.md"))).toBe("rewritten");
+    expect((await h.server.getFileHead(h.journal.fileIdForPath("notes/a.md")!))!.isDeleted).toBe(false);
+  });
+
+  it("tombstones one or two notes that disappeared while the app was closed", async () => {
+    const h = harness();
+    await h.vault.writeFile("notes/a.md", enc.encode("a"));
+    await h.vault.writeFile("notes/b.md", enc.encode("b"));
+    await h.vault.writeFile("notes/c.md", enc.encode("c"));
+    await h.engine.runCycle();
+    await h.vault.deleteFile("notes/a.md");
+    await h.vault.deleteFile("notes/b.md");
+
+    const report = await h.engine.runCycle();
+
+    expect(report.pushes).toBe(2);
+    expect(await h.vault.exists("notes/a.md")).toBe(false);
+    expect(await h.vault.exists("notes/b.md")).toBe(false);
+    expect(dec.decode(await h.vault.readFile("notes/c.md"))).toBe("c");
+  });
+
   it("downloads notes again when this device lost most of them", async () => {
     const h = harness();
     await h.vault.writeFile("Companies Resource/a.md", enc.encode("a"));

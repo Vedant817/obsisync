@@ -29,6 +29,13 @@ export interface FileState {
   pendingOperationId?: string;
   deletedLocally: boolean;
   /**
+   * The user deleted this note in Obsidian. The journal keeps that decision
+   * until the server acks the tombstone. Startup must not download the note
+   * back, and the same bytes reappearing on disk are removed again.
+   * Null means the decision was cleared because the note changed.
+   */
+  deleteIntent?: "observed" | null;
+  /**
    * This file id was folded into another note. It must not own a path, and
    * later revisions are merged into `supersededBy` instead of a second file.
    */

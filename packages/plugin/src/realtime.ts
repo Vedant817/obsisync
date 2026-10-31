@@ -53,6 +53,19 @@ export class RealtimeSync {
     }
   }
 
+  /** Run a pending cycle now. Closing the app must not drop a delete. */
+  async flush(): Promise<void> {
+    if (this.stopped) {
+      return;
+    }
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    await this.kick();
+    this.stop();
+  }
+
   stop(): void {
     this.stopped = true;
     if (this.timer) {

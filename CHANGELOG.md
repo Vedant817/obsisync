@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.9
+
+- Deleting notes and closing Obsidian keeps those deletes. The other device, and this device after a restart, no longer put the same notes back when nobody edited them.
+
 ## 0.2.8
 
 - A device that already queued deletes for several notes the server still has downloads those notes instead of deleting them everywhere.

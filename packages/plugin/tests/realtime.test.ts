@@ -51,4 +51,15 @@ describe("RealtimeSync", () => {
     expect(runs).toBe(2);
     sync.stop();
   });
+
+  it("flush runs the waiting cycle without the debounce", async () => {
+    let runs = 0;
+    const sync = new RealtimeSync(async () => {
+      runs += 1;
+      return report();
+    }, () => undefined, 10_000);
+    sync.noteChange();
+    await sync.flush();
+    expect(runs).toBe(1);
+  });
 });
