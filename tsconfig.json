@@ -4,6 +4,7 @@
     { "path": "packages/protocol" },
     { "path": "packages/crypto" },
     { "path": "packages/sync-core" },
+    { "path": "packages/live-core" },
     { "path": "packages/shared-testkit" },
     { "path": "apps/worker" },
     { "path": "packages/plugin" },

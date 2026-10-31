@@ -7,6 +7,7 @@ export {
   unwrapWithRecoveryPhrase,
   deriveContentKey,
   deriveManifestKey,
+  deriveLiveKey,
 } from "./keys.js";
 export { DEFAULT_KDF_PARAMS_TEMPLATE, defaultKdfParams, generateKdfSalt, deriveKek } from "./kdf.js";
 export {

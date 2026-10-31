@@ -110,6 +110,7 @@ export const KEY_DOMAINS = {
   localWrap: (deviceId: string, deviceKeyEpoch: number) =>
     `vb/local/device-wrap/v1/device-${deviceId}/epoch-${deviceKeyEpoch}`,
   kitChecksum: "vb/tools/checksum/v1",
+  live: (keyEpoch: number) => `vb/live/doc-key/v1/epoch-${keyEpoch}`,
 } as const;
 
 export async function sha256Async(data: Uint8Array): Promise<Uint8Array> {

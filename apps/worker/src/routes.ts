@@ -18,6 +18,7 @@ import { authenticate, rateLimit, clientKey, DEFAULT_RATE_LIMIT, hashSha256Hex, 
 import { ObjectService, contentObjectKey, manifestObjectKey, unavailableBucket, utcDate } from "./object-service.js";
 import { TursoBucket } from "./turso-bucket.js";
 import * as store from "./store.js";
+import { handleLiveRoute } from "./live.js";
 import { randomId } from "@vaultbridge/crypto";
 
 export interface VaultBridgeEnv {
@@ -36,6 +37,8 @@ export interface VaultBridgeEnv {
   PROTOCOL_VERSION?: string;
   RATE_LIMIT_MAX?: number;
   RATE_LIMIT_WINDOW_MS?: number;
+  /** Live editing polls several times a second, so it has its own bucket. */
+  RATE_LIMIT_LIVE_MAX?: number;
   /**
    * Separates rate-limiter buckets between deployments and test harnesses;
    * the limiter is per-isolate memory keyed by `${scope}:${client}`.
@@ -748,9 +751,12 @@ export function applyRateLimit(request: Request, env: VaultBridgeEnv, requestId:
   const windowMs = env.RATE_LIMIT_WINDOW_MS ? Number(env.RATE_LIMIT_WINDOW_MS) : DEFAULT_RATE_LIMIT.windowMs;
   // Buckets are scoped per deployment (and per test harness) so isolates never
   // share quota state with each other.
-  const scopedKey = `${env.RATE_SCOPE ?? "default"}:${clientKey(request)}`;
+  const live = new URL(request.url).pathname.includes("/live/");
+  const liveMax = env.RATE_LIMIT_LIVE_MAX ? Number(env.RATE_LIMIT_LIVE_MAX) : 2400;
+  const scopedKey = `${env.RATE_SCOPE ?? "default"}:${live ? "live:" : ""}${clientKey(request)}`;
+  const limit = live ? liveMax : max;
   const verdict = rateLimit(scopedKey, {
-    max: Number.isFinite(max) ? max : DEFAULT_RATE_LIMIT.max,
+    max: Number.isFinite(limit) ? limit : DEFAULT_RATE_LIMIT.max,
     windowMs: Number.isFinite(windowMs) ? windowMs : DEFAULT_RATE_LIMIT.windowMs,
   });
   if (!verdict.allowed) {
@@ -794,6 +800,9 @@ async function route(ctx: RouteContext): Promise<Response | undefined> {
   if (vaultMatch) {
     const vaultId = vaultMatch[1]!;
     const subpath = vaultMatch[2] ?? "";
+    if (subpath.startsWith("/live/")) {
+      return handleLiveRoute(ctx.env.DB, ctx.request, ctx.url, vaultId, subpath);
+    }
     if (subpath === "/state") {
       return handleVaultState(ctx, vaultId);
     }

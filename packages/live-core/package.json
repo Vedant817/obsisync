@@ -1,0 +1,27 @@
+{
+  "name": "@vaultbridge/live-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sealed Sync Live: end-to-end encrypted, character-level realtime editing over a CRDT (Yjs). Platform-agnostic.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -b",
+    "build": "tsc -b",
+    "test": "echo no-tests"
+  },
+  "dependencies": {
+    "@vaultbridge/crypto": "*",
+    "@vaultbridge/protocol": "*",
+    "diff-match-patch": "^1.0.5",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.33"
+  },
+  "devDependencies": {
+    "@types/diff-match-patch": "^1.0.36"
+  }
+}

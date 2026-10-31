@@ -155,3 +155,8 @@ export async function deriveManifestKey(vmk: Uint8Array, keyEpoch: number): Prom
   return hkdf(vmk, KEY_DOMAINS.manifest(keyEpoch));
 }
 
+/** Seals live-editing CRDT updates and cursors, and keys the document-id PRF. */
+export async function deriveLiveKey(vmk: Uint8Array, keyEpoch: number): Promise<Uint8Array> {
+  return hkdf(vmk, KEY_DOMAINS.live(keyEpoch));
+}
+

@@ -25,6 +25,7 @@ export async function hashSha256Hex(data: string): Promise<string> {
 export async function authenticate(
   db: D1DatabaseLike,
   request: Request,
+  options: { touch?: boolean } = {},
 ): Promise<AuthContext> {
   const header = request.headers.get("authorization") ?? "";
   const prefix = "Bearer ";
@@ -52,7 +53,11 @@ export async function authenticate(
   if (!vault) {
     throw new VaultBridgeError("VAULT_NOT_FOUND", "vault missing for device");
   }
-  // best-effort last-seen; never blocks the request path
+  // best-effort last-seen; never blocks the request path. Live polling skips
+  // it: a write on every 250 ms poll would dominate the database load.
+  if (options.touch === false) {
+    return { vault, device, tokenHash };
+  }
   try {
     await touchDeviceSeenStatement(db, device.device_id, new Date().toISOString()).run();
   } catch {
@@ -99,7 +104,21 @@ export function rateLimit(key: string, options: RateLimitOptions = DEFAULT_RATE_
   return { allowed: true, retryAfterSeconds: 0 };
 }
 
+/**
+ * Rate-limit key. A bearer token identifies one device, so each device gets
+ * its own bucket. Without one, fall back to the client address. Vercel and
+ * most proxies send x-forwarded-for, not cf-connecting-ip; keying on
+ * cf-connecting-ip alone put every client behind one shared "local" bucket.
+ */
 export function clientKey(request: Request, deviceHint?: string): string {
-  const ip = request.headers.get("cf-connecting-ip") ?? "local";
-  return deviceHint ? `d:${deviceHint}` : `ip:${ip}`;
+  if (deviceHint) {
+    return `d:${deviceHint}`;
+  }
+  const auth = request.headers.get("authorization") ?? "";
+  if (auth.startsWith("Bearer ") && auth.length > 24) {
+    return `t:${auth.slice(-24)}`;
+  }
+  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  const ip = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-real-ip") ?? forwarded ?? "local";
+  return `ip:${ip}`;
 }

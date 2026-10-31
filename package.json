@@ -14,7 +14,7 @@
     "tests"
   ],
   "scripts": {
-    "typecheck": "tsc -b packages/protocol packages/crypto packages/shared-testkit packages/sync-core apps/worker packages/plugin",
+    "typecheck": "tsc -b packages/protocol packages/crypto packages/shared-testkit packages/sync-core packages/live-core apps/worker packages/plugin",
     "test": "vitest run",
     "test:watch": "vitest",
     "build": "npm run build -ws --if-present",
