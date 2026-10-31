@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.8
+
+- A device that already queued deletes for several notes the server still has downloads those notes instead of deleting them everywhere.
+
 ## 0.2.7
 
 - Catching up no longer treats a note this device already deleted as a new local edit. A later delete lines up with the copy the other device published.

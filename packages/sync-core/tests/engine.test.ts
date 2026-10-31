@@ -347,6 +347,43 @@ describe("deletion divergence", () => {
     expect((await h.server.getFileHead(file.fileId))!.isDeleted).toBe(false);
   });
 
+  it("does not upload a queued delete wave for notes the server still has", async () => {
+    const h = harness();
+    await h.vault.writeFile("Companies Resource/a.md", enc.encode("a"));
+    await h.vault.writeFile("Imagine Cup/b.md", enc.encode("b"));
+    await h.vault.writeFile("System Design Notes/c.md", enc.encode("c"));
+    await h.engine.runCycle();
+    await h.engine.runCycle();
+    for (const path of [
+      "Companies Resource/a.md",
+      "Imagine Cup/b.md",
+      "System Design Notes/c.md",
+    ]) {
+      const fileId = h.journal.fileIdForPath(path)!;
+      await h.vault.deleteFile(path);
+      h.journal.updateFile(fileId, { deletedLocally: true, plaintextSha256: null });
+      h.journal.putPending({
+        operationId: `op_${path}`,
+        fileId,
+        baseRevisionId: h.journal.getFile(fileId)!.lastAppliedRevisionId,
+        action: "delete",
+        localContentFingerprint: "deleted",
+        createdAt: 1,
+        stage: "captured",
+        retryCount: 0,
+      });
+    }
+
+    const report = await h.engine.runCycle();
+
+    expect(report.pushes).toBe(0);
+    expect(report.errors).toEqual([]);
+    expect(dec.decode(await h.vault.readFile("Companies Resource/a.md"))).toBe("a");
+    expect(dec.decode(await h.vault.readFile("Imagine Cup/b.md"))).toBe("b");
+    expect(dec.decode(await h.vault.readFile("System Design Notes/c.md"))).toBe("c");
+    expect(h.journal.pendingList()).toHaveLength(0);
+  });
+
   it("downloads notes again when this device lost most of them", async () => {
     const h = harness();
     await h.vault.writeFile("Companies Resource/a.md", enc.encode("a"));

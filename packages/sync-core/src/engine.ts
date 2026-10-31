@@ -1125,19 +1125,25 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     );
     const fresh: ChangeEventWire[] = [];
     const lost: ChangeEventWire[] = [];
+    // Deletes already queued for notes the server still has. One or two are
+    // real. Three or more means this device lost the files and must download
+    // them instead of uploading the deletes.
+    const held: ChangeEventWire[] = [];
     for (const event of latest.values()) {
       if (event.eventType === "tombstone" || event.revision?.isTombstone) {
         continue;
       }
       const known = deps.journal.getFile(event.fileId);
-      if (pendingDeletes.has(event.fileId) || known?.pendingOperationId) {
+      const pending = known?.pendingOperationId ? deps.journal.raw.pending[known.pendingOperationId] : undefined;
+      const queuedDelete = pendingDeletes.has(event.fileId) || pending?.action === "delete";
+      if (pending && !queuedDelete) {
         continue;
       }
       // This device already deleted the note, and the recreate is still ahead
       // of the cursor. The pull later in this cycle applies it. Writing the
       // bytes now makes our own tombstone echo look like a local edit, so the
       // recreate never becomes the applied revision.
-      if (known?.deletedLocally && event.seq > deps.journal.cursor) {
+      if (known?.deletedLocally && event.seq > deps.journal.cursor && !queuedDelete) {
         continue;
       }
       const journalPath = known?.localPath.replace(/\\/g, "/");
@@ -1165,13 +1171,16 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       const freshDelete = Boolean(
         owner && ownerId === event.fileId && !owner.deletedLocally && !owner.supersededBy && !owner.pendingOperationId,
       );
-      if (freshDelete) {
+      if (queuedDelete) {
+        held.push(event);
+      } else if (freshDelete) {
         fresh.push(event);
       } else {
         lost.push(event);
       }
     }
-    const todo = fresh.length >= 3 ? [...lost, ...fresh] : lost;
+    const recovering = fresh.length + held.length >= 3;
+    const todo = recovering ? [...lost, ...fresh, ...held] : lost;
     if (todo.length === 0) {
       return;
     }
