@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.7
+
+- Catching up no longer treats a note this device already deleted as a new local edit. A later delete lines up with the copy the other device published.
+
 ## 0.2.6
 
 - A note the server still has is downloaded even when this device already gave up on that file id.

@@ -1129,10 +1129,17 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       if (event.eventType === "tombstone" || event.revision?.isTombstone) {
         continue;
       }
-      if (pendingDeletes.has(event.fileId)) {
+      const known = deps.journal.getFile(event.fileId);
+      if (pendingDeletes.has(event.fileId) || known?.pendingOperationId) {
         continue;
       }
-      const known = deps.journal.getFile(event.fileId);
+      // This device already deleted the note, and the recreate is still ahead
+      // of the cursor. The pull later in this cycle applies it. Writing the
+      // bytes now makes our own tombstone echo look like a local edit, so the
+      // recreate never becomes the applied revision.
+      if (known?.deletedLocally && event.seq > deps.journal.cursor) {
+        continue;
+      }
       const journalPath = known?.localPath.replace(/\\/g, "/");
       const journalPathIsReal = Boolean(
         journalPath && !journalPath.includes(CONFLICT_COPY_MARK) && !known?.supersededBy && !known?.deletedLocally,
