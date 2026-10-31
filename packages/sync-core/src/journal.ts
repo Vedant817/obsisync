@@ -93,6 +93,13 @@ export class SyncJournal {
     };
   }
 
+  /** Drop path ownership without deleting the file record. */
+  releasePath(path: string, fileId: string): void {
+    if (this.data.pathToFileId[path] === fileId) {
+      delete this.data.pathToFileId[path];
+    }
+  }
+
   trackFile(state: FileState): void {
     const owner = this.data.pathToFileId[state.localPath];
     if (owner && owner !== state.fileId) {

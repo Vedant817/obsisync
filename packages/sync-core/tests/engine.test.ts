@@ -364,6 +364,59 @@ describe("deletion divergence", () => {
     expect(dec.decode(await h.vault.readFile("Imagine Cup/b.md"))).toBe("b");
     expect(dec.decode(await h.vault.readFile("System Design Notes/c.md"))).toBe("c");
   });
+
+  it("downloads one server note the journal already gave up on", async () => {
+    const h = harness();
+    await h.vault.writeFile("notes/a.md", enc.encode("laptop"));
+    await h.vault.writeFile("notes/b.md", enc.encode("stay"));
+    await h.engine.runCycle();
+    const canonical = h.journal.fileIdForPath("notes/a.md")!;
+    const parked = "parkedfileid0001";
+    h.journal.raw.files[parked] = {
+      fileId: parked,
+      localPath: "notes/a.md.vb-conflict-abcdefgh.md",
+      lastAppliedRevisionId: null,
+      plaintextSha256: null,
+      deletedLocally: true,
+      supersededBy: canonical,
+    };
+    await h.server.otherDeviceWrite("device-B", parked, "notes/a.md", "phone");
+    await h.server.otherDeviceTombstone("device-B", canonical, "notes/a.md");
+    await h.vault.deleteFile("notes/a.md");
+    h.journal.updateFile(canonical, { deletedLocally: true, plaintextSha256: null });
+    h.journal.setCursor(99999);
+
+    const report = await h.engine.runCycle();
+
+    expect(report.pushes).toBe(0);
+    expect(dec.decode(await h.vault.readFile("notes/a.md"))).toBe("phone");
+    expect(dec.decode(await h.vault.readFile("notes/b.md"))).toBe("stay");
+  });
+
+  it("keeps a note when the other device publishes it and then tombstones the old id", async () => {
+    const h = harness();
+    await h.vault.writeFile("notes/a.md", enc.encode("laptop"));
+    await h.engine.runCycle();
+    const canonical = h.journal.fileIdForPath("notes/a.md")!;
+    const parked = "parkedfileid0002";
+    h.journal.raw.files[parked] = {
+      fileId: parked,
+      localPath: "notes/a.md.vb-conflict-abcdefgh.md",
+      lastAppliedRevisionId: null,
+      plaintextSha256: null,
+      deletedLocally: true,
+      supersededBy: canonical,
+    };
+    await h.server.otherDeviceWrite("device-B", parked, "notes/a.md", "phone");
+    await h.server.otherDeviceTombstone("device-B", canonical, "notes/a.md");
+
+    await h.engine.runCycle();
+
+    const text = dec.decode(await h.vault.readFile("notes/a.md"));
+    expect(text).toContain("phone");
+    expect(h.journal.fileIdForPath("notes/a.md")).toBe(parked);
+    expect((await h.server.getFileHead(canonical))!.isDeleted).toBe(true);
+  });
 });
 
 describe("rename handling", () => {

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.6
+
+- A note the server still has is downloaded even when this device already gave up on that file id.
+- Publishing a replaced copy no longer lets a later delete erase the real note.
+
 ## 0.2.5
 
 - If this device is missing most of the notes the server still has, it downloads them again instead of deleting them everywhere.

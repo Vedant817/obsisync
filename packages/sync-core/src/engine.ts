@@ -660,20 +660,54 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     }
     let file = deps.journal.getFile(event.fileId);
     if (file?.supersededBy && event.eventType !== "tombstone" && !rev.isTombstone) {
-      const survivor = deps.journal.getFile(file.supersededBy);
+      const survivorId = file.supersededBy;
+      const survivor = deps.journal.getFile(survivorId);
       const remoteBytes = await fetchRemoteContent(event.fileId, rev.revisionId);
-      if (survivor && remoteBytes !== null) {
+      const desired = await manifestPath(event.fileId, rev, file.localPath);
+      const survivorOnDisk = survivor ? await deps.vault.exists(survivor.localPath) : false;
+      let wroteMerge = false;
+      if (survivor && survivorOnDisk && remoteBytes !== null) {
         const localBytes = await deps.vault.readFile(survivor.localPath).catch(() => null);
-        if (localBytes !== null) {
+        if (localBytes !== null && !sameBytes(localBytes, remoteBytes)) {
           await keepOneNote(survivor.localPath, localBytes, remoteBytes, {
             fileId: survivor.fileId,
             remoteRevisionId: rev.revisionId,
             baseRevisionId: survivor.lastAppliedRevisionId,
             origin: "remote_changed",
           });
+          wroteMerge = true;
         }
       }
-      deps.journal.foldAway(event.fileId, file.supersededBy, rev.revisionId);
+      if (remoteBytes !== null) {
+        // This id is the live server copy. It has to own the real path, or a
+        // tombstone of the old id deletes the only note on disk.
+        if (deps.journal.fileIdForPath(desired) === survivorId) {
+          deps.journal.releasePath(desired, survivorId);
+        }
+        if (survivor) {
+          deps.journal.updateFile(survivorId, { deletedLocally: true, supersededBy: event.fileId });
+        }
+        const stale = deps.journal.fileIdForPath(desired);
+        if (stale && stale !== event.fileId && !(await deps.vault.exists(desired))) {
+          deps.journal.releasePath(desired, stale);
+        }
+        if (!wroteMerge) {
+          const current = await deps.vault.readFile(desired).catch(() => null);
+          if (current === null || !sameBytes(current, remoteBytes)) {
+            await deps.vault.writeFile(desired, remoteBytes);
+          }
+        }
+        const stored = await deps.vault.readFile(desired).catch(() => null);
+        deps.journal.updateFile(event.fileId, {
+          localPath: desired,
+          deletedLocally: false,
+          supersededBy: undefined,
+          lastAppliedRevisionId: rev.revisionId,
+          plaintextSha256: stored ? await sha256HexBytes(stored) : await sha256HexBytes(remoteBytes),
+        });
+      } else {
+        deps.journal.foldAway(event.fileId, survivorId, rev.revisionId);
+      }
       await deps.journal.persist();
       return { pulled: remoteBytes === null ? 0 : 1, conflicts: 0, errors: [] };
     }
@@ -977,6 +1011,9 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
         await deps.journal.persist();
         return;
       }
+      // The journal still names this path, but the note is gone. The incoming
+      // id is the copy that should be written back.
+      deps.journal.forgetFile(owner);
     }
     const safePath = claimPath(fileId, desired, rev.revisionId);
     await deps.vault.writeFile(safePath, content);
@@ -1045,11 +1082,13 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
   }
 
   /**
- * The server still has notes this device does not. Download them before the
- * scanner can treat the gap as a vault-wide delete.
- * One or two missing notes still follow the normal delete path.
- */
-async function restoreMissingNotes(): Promise<void> {
+   * The server still has a note this device does not. Download it before the
+   * scanner can treat the gap as a delete.
+   * One or two notes this journal still calls present are a normal local delete.
+   * A note the journal already gave up on, or that lives under another file id,
+   * is downloaded even when the rest of the vault looks complete.
+   */
+  async function restoreMissingNotes(): Promise<void> {
     const listed = await deps.vault.listFiles();
     const onDisk = new Set(
       listed
@@ -1060,9 +1099,6 @@ async function restoreMissingNotes(): Promise<void> {
       (file) => !file.deletedLocally && !file.supersededBy,
     ).length;
     if (deps.journal.cursor === 0 && liveJournal === 0) {
-      return;
-    }
-    if (onDisk.size > 1 && onDisk.size + 2 >= liveJournal) {
       return;
     }
 
@@ -1082,33 +1118,28 @@ async function restoreMissingNotes(): Promise<void> {
       }
     }
 
-    const missing: ChangeEventWire[] = [];
+    const pendingDeletes = new Set(
+      Object.values(deps.journal.raw.pending)
+        .filter((op) => op.action === "delete")
+        .map((op) => op.fileId),
+    );
+    const fresh: ChangeEventWire[] = [];
+    const lost: ChangeEventWire[] = [];
     for (const event of latest.values()) {
       if (event.eventType === "tombstone" || event.revision?.isTombstone) {
         continue;
       }
+      if (pendingDeletes.has(event.fileId)) {
+        continue;
+      }
       const known = deps.journal.getFile(event.fileId);
-      const path = known?.localPath;
-      if (path && onDisk.has(path.replace(/\\/g, "/"))) {
+      const journalPath = known?.localPath.replace(/\\/g, "/");
+      const journalPathIsReal = Boolean(
+        journalPath && !journalPath.includes(CONFLICT_COPY_MARK) && !known?.supersededBy && !known?.deletedLocally,
+      );
+      if (journalPathIsReal && journalPath && onDisk.has(journalPath)) {
         continue;
       }
-      if (!path) {
-        missing.push(event);
-        continue;
-      }
-      if (!(await deps.vault.exists(path))) {
-        missing.push(event);
-      }
-    }
-    const liveMissing = missing.length;
-    const serverLive = [...latest.values()].filter(
-      (event) => event.eventType !== "tombstone" && !event.revision?.isTombstone,
-    ).length;
-    if (liveMissing < 3 || liveMissing + 1 < serverLive) {
-      return;
-    }
-
-    for (const event of missing) {
       let rev = event.revision;
       if (!rev) {
         const loaded = await deps.transport.getRevision(event.revisionId);
@@ -1116,6 +1147,32 @@ async function restoreMissingNotes(): Promise<void> {
           continue;
         }
         rev = loaded;
+        event.revision = rev;
+      }
+      const path = await manifestPath(event.fileId, rev, journalPath ?? "");
+      if (!path || onDisk.has(path)) {
+        continue;
+      }
+      const ownerId = deps.journal.fileIdForPath(path);
+      const owner = ownerId ? deps.journal.getFile(ownerId) : null;
+      const freshDelete = Boolean(
+        owner && ownerId === event.fileId && !owner.deletedLocally && !owner.supersededBy && !owner.pendingOperationId,
+      );
+      if (freshDelete) {
+        fresh.push(event);
+      } else {
+        lost.push(event);
+      }
+    }
+    const todo = fresh.length >= 3 ? [...lost, ...fresh] : lost;
+    if (todo.length === 0) {
+      return;
+    }
+
+    for (const event of todo) {
+      const rev = event.revision;
+      if (!rev || rev.isTombstone) {
+        continue;
       }
       const known = deps.journal.getFile(event.fileId);
       if (known?.pendingOperationId) {
@@ -1123,16 +1180,27 @@ async function restoreMissingNotes(): Promise<void> {
       }
       if (known) {
         deps.journal.updateFile(event.fileId, { deletedLocally: false, supersededBy: undefined });
-        const owner = deps.journal.fileIdForPath(known.localPath);
-        if (owner && owner !== event.fileId && !(await deps.vault.exists(known.localPath))) {
-          deps.journal.forgetFile(owner);
-        }
-        await applyRemoteRevision(event.fileId, rev, deps.journal.getFile(event.fileId)!);
-        continue;
       }
       await pullRevisionContent(event.fileId, rev);
     }
     await deps.journal.persist();
+  }
+
+  async function manifestPath(fileId: string, rev: RevisionMeta, fallback: string): Promise<string> {
+    if (!rev.manifestObjectId) {
+      return fallback;
+    }
+    const manifestBytes = await deps.transport.getObject(rev.manifestObjectId);
+    if (!manifestBytes) {
+      return fallback;
+    }
+    const manifest = await decryptManifest(manifestBytes, deps.keyMaterial.manifestKey, {
+      vaultId: deps.vaultId,
+      fileId,
+      revisionId: rev.revisionId,
+      keyEpoch: rev.keyEpoch,
+    });
+    return normalizeLocalPath(manifest.path);
   }
 
   /** Rename leftover `.vb-conflict-` files back to the note they belong to. */
