@@ -12,7 +12,7 @@ import type { SyncJournalData } from "../src/state.js";
 // ---------------------------------------------------------------------------
 
 export class FakeVault implements LocalVault {
-  private clock = 1;
+  private clock = Date.now();
   files = new Map<string, { bytes: Uint8Array; mtime: number }>();
   snapshots: string[] = [];
 
@@ -29,7 +29,8 @@ export class FakeVault implements LocalVault {
   }
 
   async writeFile(path: string, bytes: Uint8Array): Promise<void> {
-    this.files.set(path, { bytes, mtime: ++this.clock });
+    this.clock = Math.max(Date.now(), this.clock + 1);
+    this.files.set(path, { bytes, mtime: this.clock });
   }
 
   async deleteFile(path: string): Promise<void> {

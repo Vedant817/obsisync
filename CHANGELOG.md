@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.11
+
+- When two devices edit the same note, the later edit replaces it. The settings page no longer asks you to keep one side.
+
 ## 0.2.10
 
 - A dropped network request no longer leaves sync paused. The next poll retries, and opening the app retries immediately. Pause stays on only when the Pause toggle is on.

@@ -188,76 +188,64 @@ describe("pull cycle", () => {
     expect(h.server.uploadPuts).toBe(2); // own original push + foreign staging PUT
   });
 
-  it("auto-merges a divergent note and CAS-pushes the merge onto the remote head", async () => {
+  it("publishes the later local edit over the other device's revision", async () => {
     const h = harness();
     await h.vault.writeFile("notes/a.md", enc.encode("line1\nline2\nline3"));
     await h.engine.runCycle();
     const file = firstFile(h);
     await h.server.otherDeviceWrite("device-B", file.fileId, "notes/a.md", "line1\nline2\nline3-REMOTE");
+    await new Promise((resolve) => setTimeout(resolve, 5));
     await h.vault.writeFile("notes/a.md", enc.encode("line1-LOCAL\nline2\nline3"));
 
     const r = await h.engine.runCycle();
     expect(r.conflicts).toBe(0);
     expect(r.errors).toEqual([]);
     expect(h.journal.unresolvedConflicts()).toHaveLength(0);
-    // Merged text (both edits) landed on the server via CAS onto remote head…
-    expect(await headPlaintext(h, file.fileId)).toBe("line1-LOCAL\nline2\nline3-REMOTE");
-    expect(h.server.uploadPuts).toBe(3); // own r1 + foreign staging + merged push
-    // …and the journal reflects the acknowledged state (no stuck pending).
+    expect(await headPlaintext(h, file.fileId)).toBe("line1-LOCAL\nline2\nline3");
     const state = h.journal.getFile(file.fileId)!;
     expect(state.pendingOperationId).toBeUndefined();
-    expect(state.plaintextSha256).toBe(await sha256HexBytes(enc.encode("line1-LOCAL\nline2\nline3-REMOTE")));
+    expect(dec.decode(await h.vault.readFile("notes/a.md"))).toBe("line1-LOCAL\nline2\nline3");
 
     const r2 = await h.engine.runCycle();
     expect(r2.dataObjectPuts).toBe(0);
   });
 
-  it("keeps both edits in the same note when a divergent note cannot merge", async () => {
+  it("replaces the note with the other device's later edit", async () => {
     const h = harness();
     await h.vault.writeFile("notes/a.md", enc.encode("alpha\nbeta\ngamma"));
     await h.engine.runCycle();
     const file = firstFile(h);
-    const remoteRev = (await h.server.otherDeviceWrite("device-B", file.fileId, "notes/a.md", "alpha-B\nbeta\ngamma")).revisionId;
     await h.vault.writeFile("notes/a.md", enc.encode("alpha-LOCAL\nbeta\ngamma"));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const remoteRev = (await h.server.otherDeviceWrite("device-B", file.fileId, "notes/a.md", "alpha-B\nbeta\ngamma")).revisionId;
 
     const r = await h.engine.runCycle();
-    expect(r.pushes).toBe(0);
-    expect(h.engine.status()).toBe("CONFLICT");
-    const conflicts = h.journal.unresolvedConflicts();
-    expect(conflicts).toHaveLength(1);
-    expect(conflicts[0]!.origin).toBe("remote_changed");
-    expect(conflicts[0]!.otherPath).toBeNull();
-    expect(conflicts[0]!.remoteHeadRevisionId).toBe(remoteRev);
-    const note = dec.decode(await h.vault.readFile("notes/a.md"));
-    expect(note).toContain("alpha-LOCAL\nbeta\ngamma");
-    expect(note).toContain("alpha-B\nbeta\ngamma");
+    expect(r.conflicts).toBe(0);
+    expect(h.engine.status()).toBe("READY");
+    expect(h.journal.unresolvedConflicts()).toHaveLength(0);
+    expect(dec.decode(await h.vault.readFile("notes/a.md"))).toBe("alpha-B\nbeta\ngamma");
     expect(conflictCopiesIn(h.vault)).toEqual([]);
     expect((await h.server.getFileHead(file.fileId))!.headRevisionId).toBe(remoteRev);
-    expect(h.server.uploadPuts).toBe(2);
-
-    await h.engine.resolveConflict(file.fileId, "local");
-    const pushed = await h.engine.runCycle();
-    expect(pushed.pushes).toBe(1);
-    expect(dec.decode(await h.vault.readFile("notes/a.md"))).toBe("alpha-LOCAL\nbeta\ngamma");
-    expect(await headPlaintext(h, file.fileId)).toBe("alpha-LOCAL\nbeta\ngamma");
+    expect(h.journal.getFile(file.fileId)!.lastAppliedRevisionId).toBe(remoteRev);
   });
 
-  it("keeps the local binary and does not add a second file", async () => {
+  it("publishes a later local binary and does not add a second file", async () => {
     const h = harness();
     await h.vault.writeFile("data.bin", new Uint8Array([0, 1, 2, 3]));
     await h.engine.runCycle();
     const file = firstFile(h);
     await h.server.otherDeviceWrite("device-B", file.fileId, "data.bin", "B bytes");
+    await new Promise((resolve) => setTimeout(resolve, 5));
     await h.vault.writeFile("data.bin", new Uint8Array([9, 9, 9]));
 
     const r = await h.engine.runCycle();
-    expect(r.pushes).toBe(0);
-    expect(r.conflicts).toBeGreaterThanOrEqual(1);
-    expect(h.engine.status()).toBe("CONFLICT");
-    const conflict = h.journal.unresolvedConflicts()[0]!;
-    expect(conflict.otherPath).toBeNull();
+    expect(r.conflicts).toBe(0);
+    expect(h.journal.unresolvedConflicts()).toHaveLength(0);
+    expect(h.engine.status()).toBe("READY");
     expect(conflictCopiesIn(h.vault)).toEqual([]);
     expect(new Uint8Array(await h.vault.readFile("data.bin"))).toEqual(new Uint8Array([9, 9, 9]));
+    expect(r.pushes).toBe(1);
+    expect(h.journal.getFile(file.fileId)!.pendingOperationId).toBeUndefined();
   });
 });
 
@@ -858,8 +846,7 @@ describe("review fixes: retries, cursor, paths, deletes", () => {
     const pulled = await h.engine.runCycle();
     expect(pulled.errors).toEqual([]);
     const note = dec.decode(await h.vault.readFile("notes/same.md"));
-    expect(note).toContain("local-wins-path");
-    expect(note).toContain("remote twin");
+    expect(note).toBe("remote twin");
     expect(h.journal.fileIdForPath("notes/same.md")).toBe(localId);
     expect(conflictCopiesIn(h.vault)).toEqual([]);
     const remote = h.journal.getFile("dddddddddddddddd");

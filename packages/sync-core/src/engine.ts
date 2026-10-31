@@ -26,7 +26,6 @@ import type {
   RevisionMeta,
 } from "@vaultbridge/protocol";
 import { SyncJournal } from "./journal.js";
-import { merge3 } from "./merge.js";
 import {
   DEFAULT_CYCLE_BUDGET,
   DEFAULT_SYNC_CYCLE_OPTIONS,
@@ -127,6 +126,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     // A delete the user already made is removed again if the bytes came back,
     // then missing-note recovery runs. Recovery must not undo that decision.
     await enforceObservedDeletes();
+    await settleOpenConflicts();
     // A device that lost most of its notes must download them again.
     // Scanning first would upload those gaps as deletes.
     await restoreMissingNotes();
@@ -379,38 +379,25 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     let outgoingHash: string = currentHash!;
     let outgoingBase: string | null = localBase;
 
-    if (remoteIsAdvanced) {
-      if (env.autoMerge && mergeable(file.localPath)) {
-        const merged = await attemptMerge(pending.fileId, file, remoteHeadId!, outgoingBytes);
-        if (merged.status === "merged") {
-          outgoingBytes = merged.bytes;
-          outgoingHash = await sha256HexBytes(merged.bytes);
-          outgoingBase = remoteHeadId; // merged revision spans remote; CAS onto it
-        } else if (merged.remoteBytes !== undefined) {
-          await keepOneNote(file.localPath, contentBytes!, merged.remoteBytes, {
-            fileId: pending.fileId,
-            remoteRevisionId: remoteHeadId,
-            baseRevisionId: localBase,
-            origin: "remote_changed",
-          });
-          deps.journal.bumpPendingRetry(pending.operationId);
-          await deps.journal.persist();
-          return { pushed: 0, skipped: 0, conflicts: 1 };
-        }
-      } else {
-        const remoteBytes = await fetchRemoteContent(pending.fileId, remoteHeadId!);
-        if (remoteBytes !== null && contentBytes !== null) {
-          await keepOneNote(file.localPath, contentBytes, remoteBytes, {
-            fileId: pending.fileId,
-            remoteRevisionId: remoteHeadId,
-            baseRevisionId: localBase,
-            origin: "remote_changed",
-          });
-        }
-        deps.journal.bumpPendingRetry(pending.operationId);
+    if (remoteIsAdvanced && contentBytes !== null) {
+      const remoteBytes = await fetchRemoteContent(pending.fileId, remoteHeadId!);
+      const rev = await deps.transport.getRevision(remoteHeadId!);
+      const keepLocal = rev !== null && await localIsNewer(file.localPath, rev.createdAt);
+      if (remoteBytes !== null && !keepLocal) {
+        await deps.vault.writeFile(file.localPath, remoteBytes);
+        deps.journal.dropPending(pending.operationId);
+        deps.journal.updateFile(pending.fileId, {
+          plaintextSha256: await sha256HexBytes(remoteBytes),
+          lastAppliedRevisionId: remoteHeadId,
+          deletedLocally: false,
+          pendingOperationId: undefined,
+        });
+        deps.journal.resolveConflict(pending.fileId);
         await deps.journal.persist();
-        return { pushed: 0, skipped: 0, conflicts: 1 };
+        return { pushed: 0, skipped: 1, conflicts: 0 };
       }
+      // This device's edit is newer. Publish it on top of the other device's revision.
+      outgoingBase = remoteHeadId;
     }
 
     if (outgoingBytes.byteLength > env.maxObjectBytes) {
@@ -497,18 +484,16 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     };
     const response = await deps.transport.commit(commitRequest);
     if (response.result === "CONFLICT") {
-      deps.journal.addConflict({
-        fileId: current.fileId,
-        otherPath: null,
-        baseRevisionId: baseRevisionId,
-        remoteHeadRevisionId: response.conflict?.currentHead.headRevisionId ?? null,
-        origin: "remote_changed",
-        createdAt: now(),
-        resolved: false,
-      });
+      const headId = response.conflict?.currentHead.headRevisionId ?? null;
+      if (headId) {
+        deps.journal.raw.pending[current.operationId] = {
+          ...current,
+          baseRevisionId: headId,
+        };
+      }
       deps.journal.bumpPendingRetry(current.operationId);
       await deps.journal.persist();
-      return { pushed: 0, skipped: 0, conflicts: 1 };
+      return { pushed: 0, skipped: 0, conflicts: 0 };
     }
     await acknowledgeCommit(current, file.localPath, plaintextHash, response);
     return { pushed: 1, skipped: 0, conflicts: 0 };
@@ -610,51 +595,6 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     deps.journal.updateFile(pending.fileId, patch);
     deps.journal.dropPending(pending.operationId);
     await deps.journal.persist();
-  }
-
-  /**
-   * Three-way merge of a divergent file (spec §9.6 row 3 + merge rules):
-   * base = the revision local edits forked from (authentic, server-fetched),
-   * remote = server head. Only UTF-8 Markdown-ish text merges.
-   */
-  async function attemptMerge(
-    fileId: string,
-    file: FileState,
-    remoteRevisionId: string,
-    localBytes: Uint8Array,
-  ): Promise<{ status: "merged"; bytes: Uint8Array } | { status: "needsReview" | "unsupported"; remoteBytes?: Uint8Array }> {
-    const remoteMeta = await deps.transport.getRevision(remoteRevisionId);
-    const baseMeta = file.lastAppliedRevisionId ? await deps.transport.getRevision(file.lastAppliedRevisionId) : null;
-    if (!remoteMeta || !remoteMeta.blobObjectId || !remoteMeta.manifestObjectId) {
-      return { status: "unsupported" };
-    }
-    const remoteBytes = await fetchRemoteContent(fileId, remoteMeta.revisionId);
-    if (remoteBytes === null) {
-      return { status: "unsupported" };
-    }
-    if (!baseMeta || !baseMeta.blobObjectId) {
-      return { status: "needsReview", remoteBytes };
-    }
-    const baseBytes = await fetchRemoteContent(fileId, baseMeta.revisionId);
-    if (baseBytes === null) {
-      return { status: "needsReview", remoteBytes };
-    }
-    const decoder = new TextDecoder("utf-8", { fatal: true });
-    let baseText: string;
-    let localText: string;
-    let remoteText: string;
-    try {
-      baseText = decoder.decode(baseBytes);
-      localText = decoder.decode(localBytes);
-      remoteText = decoder.decode(remoteBytes);
-    } catch {
-      return { status: "needsReview", remoteBytes };
-    }
-    const merged = merge3(baseText, localText, remoteText);
-    if (merged.kind === "merged" && merged.text !== null) {
-      return { status: "merged", bytes: new TextEncoder().encode(merged.text) };
-    }
-    return { status: "needsReview", remoteBytes };
   }
 
   interface ReconcileResult {
@@ -782,30 +722,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     }
 
     if (localDirty) {
-      // Divergence while local pending: try auto-merge (same fileId), else
-      // preserve both with a remote conflict copy (spec §9.6 row 3).
       const currentBytes = await deps.vault.readFile(file.localPath).catch(() => null);
-      if (currentBytes !== null && env.autoMerge && mergeable(file.localPath)) {
-        const merged = await attemptMerge(event.fileId, file, rev.revisionId, currentBytes);
-        if (merged.status === "merged") {
-          await deps.vault.writeFile(file.localPath, merged.bytes);
-          const mergedHash = await sha256HexBytes(merged.bytes);
-          const pendingId = file.pendingOperationId;
-          if (pendingId && deps.journal.raw.pending[pendingId]) {
-            // Refresh the open pending op to carry the merged bytes with the
-            // remote head as its CAS base. Do NOT mark the file "applied" here:
-            // that would make pushPending treat the merged content as an
-            // absolute no-op and silently drop the merge from the server.
-            deps.journal.raw.pending[pendingId] = {
-              ...deps.journal.raw.pending[pendingId]!,
-              localContentFingerprint: mergedHash,
-              baseRevisionId: rev.revisionId,
-            };
-            await deps.journal.persist();
-            return { pulled: 0, conflicts: 0, errors: [] };
-          }
-        }
-      }
       const remoteBytes = await fetchRemoteContent(event.fileId, rev.revisionId);
       if (remoteBytes === null) {
         return { pulled: 0, conflicts: 0, errors: [`missing remote object for ${rev.revisionId}`], blocked: true };
@@ -825,14 +742,32 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
         await deps.journal.persist();
         return { pulled: 0, conflicts: 1, errors: [] };
       }
-      await keepOneNote(file.localPath, currentBytes, remoteBytes, {
-        fileId: event.fileId,
-        remoteRevisionId: rev.revisionId,
-        baseRevisionId: file.lastAppliedRevisionId,
-        origin: "remote_changed",
-      });
+      const keepLocal = await localIsNewer(file.localPath, rev.createdAt);
+      if (!keepLocal) {
+        await deps.vault.writeFile(file.localPath, remoteBytes);
+        if (file.pendingOperationId) {
+          deps.journal.dropPending(file.pendingOperationId);
+        }
+        deps.journal.updateFile(event.fileId, {
+          plaintextSha256: await sha256HexBytes(remoteBytes),
+          lastAppliedRevisionId: rev.revisionId,
+          deletedLocally: false,
+          pendingOperationId: undefined,
+        });
+        deps.journal.resolveConflict(event.fileId);
+        await deps.journal.persist();
+        return { pulled: 1, conflicts: 0, errors: [] };
+      }
+      const pendingId = file.pendingOperationId;
+      if (pendingId && deps.journal.raw.pending[pendingId]) {
+        deps.journal.raw.pending[pendingId] = {
+          ...deps.journal.raw.pending[pendingId]!,
+          baseRevisionId: rev.revisionId,
+        };
+      }
+      deps.journal.resolveConflict(event.fileId);
       await deps.journal.persist();
-      return { pulled: 0, conflicts: 1, errors: [] };
+      return { pulled: 0, conflicts: 0, errors: [] };
     }
 
     // Clean local: apply remote (write THEN journal — crash-safe ordering).
@@ -1057,8 +992,8 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
   }
 
   /**
-   * Put both versions in the note that already has this path. The file list
-   * keeps one name. Keep mine / Keep theirs rewrite that same note.
+   * Two devices edited one note. The later edit replaces the file.
+   * A spliced "both edits" note is not an edit, so the server copy replaces it.
    */
   async function keepOneNote(
     path: string,
@@ -1071,42 +1006,78 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       origin: "remote_changed" | "delete_vs_edit";
     },
   ): Promise<void> {
+    void meta.baseRevisionId;
+    void meta.origin;
     if (sameBytes(localBytes, remoteBytes)) {
+      deps.journal.resolveConflict(meta.fileId);
       return;
     }
-    const localText = mergeable(path) ? decodeUtf8(localBytes) : null;
-    const remoteText = mergeable(path) ? decodeUtf8(remoteBytes) : null;
-    if (localText === null || remoteText === null) {
-      deps.journal.addConflict({
-        fileId: meta.fileId,
-        otherPath: null,
-        baseRevisionId: meta.baseRevisionId,
-        remoteHeadRevisionId: meta.remoteRevisionId,
-        origin: meta.origin,
-        createdAt: now(),
-        resolved: false,
+    const rev = meta.remoteRevisionId ? await deps.transport.getRevision(meta.remoteRevisionId) : null;
+    const keepLocal = !isSplicedNote(localBytes) && (rev === null || await localIsNewer(path, rev.createdAt));
+    const winner = keepLocal ? localBytes : remoteBytes;
+    if (!sameBytes(localBytes, winner)) {
+      await deps.vault.writeFile(path, winner);
+    }
+    if (!keepLocal && meta.remoteRevisionId) {
+      const file = deps.journal.getFile(meta.fileId);
+      if (file?.pendingOperationId) {
+        deps.journal.dropPending(file.pendingOperationId);
+      }
+      deps.journal.updateFile(meta.fileId, {
+        plaintextSha256: await sha256HexBytes(winner),
+        lastAppliedRevisionId: meta.remoteRevisionId,
+        deletedLocally: false,
+        pendingOperationId: undefined,
       });
-      return;
+    } else if (keepLocal && meta.remoteRevisionId) {
+      const file = deps.journal.getFile(meta.fileId);
+      const pendingId = file?.pendingOperationId;
+      if (pendingId && deps.journal.raw.pending[pendingId]) {
+        deps.journal.raw.pending[pendingId] = {
+          ...deps.journal.raw.pending[pendingId]!,
+          baseRevisionId: meta.remoteRevisionId,
+        };
+      }
     }
-    const combined = oneDocument(localText, remoteText);
-    if (combined !== localText) {
-      await deps.vault.writeFile(path, new TextEncoder().encode(combined));
+    deps.journal.resolveConflict(meta.fileId);
+  }
+
+  /** Clear a prompt left by an older build. The later edit is written during this cycle. */
+  async function settleOpenConflicts(): Promise<void> {
+    for (const record of deps.journal.unresolvedConflicts()) {
+      if (record.origin !== "remote_changed" || !record.remoteHeadRevisionId) {
+        continue;
+      }
+      const file = deps.journal.getFile(record.fileId);
+      if (!file) {
+        deps.journal.resolveConflict(record.fileId);
+        continue;
+      }
+      const remoteBytes = await fetchRemoteContent(record.fileId, record.remoteHeadRevisionId);
+      const localBytes = await deps.vault.readFile(file.localPath).catch(() => null);
+      if (remoteBytes === null || localBytes === null) {
+        continue;
+      }
+      await keepOneNote(file.localPath, localBytes, remoteBytes, {
+        fileId: record.fileId,
+        remoteRevisionId: record.remoteHeadRevisionId,
+        baseRevisionId: record.baseRevisionId,
+        origin: "remote_changed",
+      });
     }
-    const marked = combined !== localText && combined !== remoteText;
-    if (!marked) {
-      return;
+  }
+
+  async function localIsNewer(path: string, remoteCreatedAt: string): Promise<boolean> {
+    const remoteMs = Date.parse(remoteCreatedAt);
+    if (!Number.isFinite(remoteMs)) {
+      return true;
     }
-    deps.journal.addConflict({
-      fileId: meta.fileId,
-      otherPath: null,
-      localText,
-      remoteText,
-      baseRevisionId: meta.baseRevisionId,
-      remoteHeadRevisionId: meta.remoteRevisionId,
-      origin: meta.origin,
-      createdAt: now(),
-      resolved: false,
-    });
+    const listed = await deps.vault.listFiles();
+    const meta = listed.find((row) => row.path === path);
+    if (!meta) {
+      return false;
+    }
+    return meta.mtimeMs > remoteMs;
   }
 
   /**
@@ -1363,18 +1334,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       } else {
         const current = await deps.vault.readFile(canonical);
         if (!sameBytes(current, extra)) {
-          const localText = decodeUtf8(current);
-          const remoteText = decodeUtf8(extra);
-          const combined = localText !== null && remoteText !== null
-            ? new TextEncoder().encode(oneDocument(localText, remoteText))
-            : current;
-          if (!sameBytes(current, combined)) {
-            await deps.vault.writeFile(canonical, combined);
-            const owner = deps.journal.fileIdForPath(canonical);
-            if (owner) {
-              deps.journal.updateFile(owner, { plaintextSha256: null });
-            }
-          }
+          await deps.vault.snapshot(meta.path, "drop-conflict-copy");
         }
       }
       await deps.vault.deleteFile(meta.path);
@@ -1586,10 +1546,6 @@ function mimeOf(path: string): RevisionManifest["contentTypeHint"] {
   return "binary";
 }
 
-function mergeable(path: string): boolean {
-  return path.endsWith(".md");
-}
-
 export function canonicalPathFromConflict(path: string): string | null {
   const norm = path.replace(/\\/g, "/");
   const mark = norm.lastIndexOf(CONFLICT_COPY_MARK);
@@ -1623,7 +1579,12 @@ function decodeUtf8(bytes: Uint8Array): string | null {
   }
 }
 
-/** Both edits, one note. A later Keep mine / Keep theirs picks a side. */
+function isSplicedNote(bytes: Uint8Array): boolean {
+  const text = decodeUtf8(bytes);
+  return text !== null && text.includes("\n---\nOther device\n");
+}
+
+/** Older builds pasted both edits into one note. New cycles do not. */
 export function oneDocument(local: string, remote: string): string {
   if (local === remote || local.includes(remote)) {
     return local;

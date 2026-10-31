@@ -2,7 +2,7 @@
  * WP-06: two real sync-core devices against the REAL sync API (SQLite +
  * in-memory object store through the harness). Exercises the spec test matrix shapes:
  *   T04 — paged change-feed convergence across devices
- *   T05 — divergent unmergeable edits preserve both sides + local resolution
+ *   T05 — the later edit replaces the note on the other device
  *   T06 — tombstone lifecycle (delete / recreate / edit-vs-delete resolution)
  */
 import { describe, expect, it } from "vitest";
@@ -220,7 +220,7 @@ describe("two-device integration over the real worker (WP-06)", () => {
     expect(devB.engine.status()).toBe("READY");
   });
 
-  it("T05: unmergeable divergence preserves both sides; resolveConflict(local) converges on disk+server", async () => {
+  it("T05: the later edit replaces the note on the other device", async () => {
     const harness = createWorkerHarness();
     const { admin, vmk } = await createVault(harness);
     const guest = await pairSecondDevice(harness, admin);
@@ -242,13 +242,10 @@ describe("two-device integration over the real worker (WP-06)", () => {
 
     const rB2 = await devB.engine.runCycle();
     expect(rB2.pushes).toBe(0);
-    expect(rB2.conflicts).toBeGreaterThanOrEqual(1);
-    expect(devB.engine.status()).toBe("CONFLICT");
-    const conflicts = devB.engine.unresolvedConflicts();
-    expect(conflicts).toHaveLength(1);
-    expect(conflicts[0]!.origin).toBe("remote_changed");
-    expect(dec.decode(await vaultB.readFile("data/draft.bin"))).toBe("BBB-guest");
-    expect(conflicts[0]!.otherPath).toBeNull();
+    expect(rB2.conflicts).toBe(0);
+    expect(devB.engine.status()).toBe("READY");
+    expect(devB.engine.unresolvedConflicts()).toHaveLength(0);
+    expect(dec.decode(await vaultB.readFile("data/draft.bin"))).toBe("CCC-admin");
     expect([...vaultB.files.keys()].some((p) => p.includes(".vb-conflict-"))).toBe(false);
 
     const fileId = devB.journal.fileStates.find((f) => f.localPath === "data/draft.bin")!.fileId;
@@ -256,22 +253,12 @@ describe("two-device integration over the real worker (WP-06)", () => {
     expect(headBefore.isDeleted).toBe(false);
     expect(await headPlaintextFromApi(harness, admin.vaultId, admin.token, fileId, vmk)).toBe("CCC-admin");
 
-    // Guest resolves in favor of LOCAL: rebase -> next cycle CAS-pushes BBB.
-    await devB.engine.resolveConflict(fileId, "local");
-    expect(devB.engine.unresolvedConflicts()).toHaveLength(0);
-    const rB3 = await devB.engine.runCycle();
-    expect(rB3.pushes).toBe(1);
-    expect(rB3.conflicts).toBe(0);
-    expect(rB3.errors).toEqual([]);
-    expect(devB.engine.status()).toBe("READY");
-    expect(await headPlaintextFromApi(harness, admin.vaultId, admin.token, fileId, vmk)).toBe("BBB-guest");
-
     const rA3 = await devA.engine.runCycle();
-    expect(rA3.pulls).toBe(1); // conflict copy is a device artifact, never a feed event
-    expect(dec.decode(await vaultA.readFile("data/draft.bin"))).toBe("BBB-guest");
+    expect(rA3.conflicts).toBe(0);
+    expect(dec.decode(await vaultA.readFile("data/draft.bin"))).toBe("CCC-admin");
 
     const usage = await usageOf(harness, admin.vaultId, admin.token);
-    expect(usage.revisionCount).toBe(3); // r1 + r2 + resolution — copy never committed
+    expect(usage.revisionCount).toBe(2);
   });
 
   it("T06: tombstones propagate, recreation re-CASes onto the tombstone, edit-vs-delete resolves remote", async () => {

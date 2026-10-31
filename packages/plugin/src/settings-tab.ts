@@ -86,7 +86,6 @@ export function renderSettings(container: HTMLElement, host: SettingsHost, redra
   renderInvite(container, host, redraw);
   renderPause(container, host);
   renderStatus(container, host);
-  renderConflicts(container, host, redraw);
   renderHistory(container, host);
   renderRemote(container, host, redraw);
 }
@@ -266,29 +265,6 @@ function renderStatus(container: HTMLElement, host: SettingsHost): void {
   }
 }
 
-function renderConflicts(container: HTMLElement, host: SettingsHost, redraw: () => void): void {
-  const rows = host.conflictRows();
-  if (rows.length === 0) {
-    return;
-  }
-  container.createEl("h3", { text: "Conflicts" });
-  for (const row of rows) {
-    const setting = new Setting(container)
-      .setName(row.path)
-      .setDesc("Both edits are in this note. Keep mine uses this device. Keep theirs uses the other device.");
-    setting.addButton((button) => {
-      button.setButtonText("Keep mine").onClick(() => {
-        void host.resolveConflict(row.fileId, "local").then(redraw);
-      });
-    });
-    setting.addButton((button) => {
-      button.setButtonText("Keep theirs").onClick(() => {
-        void host.resolveConflict(row.fileId, "remote").then(redraw);
-      });
-    });
-  }
-}
-
 function renderHistory(container: HTMLElement, host: SettingsHost): void {
   const files = host.trackedFiles();
   container.createEl("h3", { text: "Notes on this device" });
@@ -373,9 +349,17 @@ export function filesFromJournal(journalJson: string): TrackedFile[] {
   if (!parsed.ok) {
     return [];
   }
+  const seen = new Set<string>();
   return Object.values(parsed.journal.files)
-    .filter((file) => !file.localPath.startsWith(".vb-conflict-"))
+    .filter((file) => !file.deletedLocally && !file.supersededBy && !file.localPath.includes(".vb-conflict-"))
     .map((file) => ({ fileId: file.fileId, path: file.localPath }))
+    .filter((file) => {
+      if (seen.has(file.path)) {
+        return false;
+      }
+      seen.add(file.path);
+      return true;
+    })
     .sort((a, b) => a.path.localeCompare(b.path));
 }
 
