@@ -104,6 +104,8 @@ export interface SyncJournalData {
   conflicts: Record<string, ConflictRecord>;
   /** Set when a cost/safety pause stopped the engine (spec §12.2). */
   pausedReason: string | null;
+  /** Retries for one revision. Cleared when that revision is applied or skipped. */
+  faultAttempts?: Record<string, number>;
   /** Cycle counters for reporting/UI honesty. */
   stats: SyncStats;
 }
@@ -129,6 +131,7 @@ export function emptyJournal(deviceId: string | null = null): SyncJournalData {
     pending: {},
     conflicts: {},
     pausedReason: null,
+    faultAttempts: {},
     stats: {
       cyclesRun: 0,
       lastCycleAt: null,
@@ -169,6 +172,7 @@ export function parseJournal(raw: string): JournalParseResult {
       pathToFileId: data.pathToFileId ?? {},
       pending: data.pending ?? {},
       conflicts: data.conflicts ?? {},
+      faultAttempts: data.faultAttempts ?? {},
       stats: { ...emptyJournal().stats, ...(data.stats ?? {}) },
     } as SyncJournalData,
   };

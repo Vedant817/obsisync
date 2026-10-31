@@ -195,8 +195,10 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
     this.settings.lastPulls = report.pulls;
     if (report.pausedReason) {
       this.setStatus("Sealed Sync live · paused");
-    } else if (report.status === "OFFLINE" || report.errors.length > 0) {
+    } else if (report.status === "OFFLINE") {
       this.setStatus("Sealed Sync live · offline");
+    } else if (report.errors.length > 0) {
+      this.setStatus("Sealed Sync live · retrying");
     } else if (report.conflicts > 0 || report.status === "CONFLICT") {
       this.setStatus("Sealed Sync live · conflict");
     } else if (report.pushes > 0 || report.pulls > 0) {

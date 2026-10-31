@@ -25,6 +25,7 @@ import type {
   FileId,
   RevisionMeta,
 } from "@vaultbridge/protocol";
+import { classifySyncFault } from "./faults.js";
 import { SyncJournal } from "./journal.js";
 import {
   DEFAULT_CYCLE_BUDGET,
@@ -87,6 +88,8 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     deps.journal.raw.deviceId = deps.deviceId;
   }
   let currentStatus: SyncStatus = "READY";
+  /** Notes opened in this cycle. Zero means a sealed failure might be the vault key. */
+  let contentOpens = 0;
 
   // ---------------------------------------------------------------------------
   // Cycle
@@ -104,7 +107,9 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     let noAcksSkipped = 0;
     let conflicts = 0;
     let dataObjectPuts = 0;
+    contentOpens = 0;
 
+    try {
     // Repair renamed conflict copies before anything else, including while paused.
     // Those names were showing up as the notes themselves.
     await foldConflictCopies();
@@ -159,23 +164,24 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
         try {
           result = await reconcileRemoteEvent(event, { autoMerge: opts.autoMerge !== false });
         } catch (err) {
-          // One note that cannot be opened must not abort the cycle. The cursor
-          // stays on this event so a later poll retries it.
-          result = {
-            pulled: 0,
-            conflicts: 0,
-            errors: [`pull ${event.revisionId}: ${err instanceof Error ? err.message : String(err)}`],
-            blocked: true,
-          };
+          result = fromFault(err, event.revisionId);
         }
         pulls += result.pulled;
         conflicts += result.conflicts;
         errors.push(...result.errors);
+        if (result.transportDown) {
+          currentStatus = "OFFLINE";
+          blocked = true;
+          break;
+        }
         if (result.blocked) {
           // This seq was not applied. Leave the cursor behind it so the next
           // cycle retries. Never jump to endCursor past a hole.
           blocked = true;
           break;
+        }
+        if (deps.journal.raw.faultAttempts) {
+          delete deps.journal.raw.faultAttempts[event.revisionId];
         }
         after = event.seq;
         deps.journal.setCursor(event.seq);
@@ -222,7 +228,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
             await deps.journal.persist();
             break;
           }
-          errors.push(`push ${pending.operationId}: ${err instanceof Error ? err.message : String(err)}`);
+          errors.push(classifySyncFault(err, { contentOpens, attempts: pending.retryCount }).message);
           deps.journal.bumpPendingRetry(pending.operationId);
           await deps.journal.persist();
         }
@@ -255,6 +261,20 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       cursor: deps.journal.cursor,
       pulls, pushes, noAcksSkipped, conflicts, dataObjectPuts, errors,
     };
+    } catch (err) {
+      const decision = classifySyncFault(err, { contentOpens, attempts: 0 });
+      if (decision.action === "retry-cycle") {
+        currentStatus = "OFFLINE";
+      }
+      return {
+        started: true,
+        pausedReason: deps.journal.raw.pausedReason,
+        status: currentStatus === "SYNCING" || currentStatus === "SCANNING" || currentStatus === "RECONCILING" ? "OFFLINE" : currentStatus,
+        cursor: deps.journal.cursor,
+        pulls, pushes, noAcksSkipped, conflicts, dataObjectPuts,
+        errors: [...errors, decision.message],
+      };
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -566,18 +586,35 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     };
     const response = await deps.transport.commit(commitRequest);
     if (response.result === "CONFLICT") {
-      deps.journal.addConflict({
-        fileId: pending.fileId,
-        otherPath: null,
-        baseRevisionId: commitRequest.parentRevisionId,
-        remoteHeadRevisionId: response.conflict?.currentHead.headRevisionId ?? null,
-        origin: "delete_vs_edit",
-        createdAt: now(),
-        resolved: false,
-      });
+      const headId = response.conflict?.currentHead.headRevisionId ?? null;
+      const headRev = headId ? await deps.transport.getRevision(headId) : null;
+      const remoteMs = headRev ? Date.parse(headRev.createdAt) : NaN;
+      if (headRev && !headRev.isTombstone && Number.isFinite(remoteMs) && remoteMs > current.createdAt) {
+        const remoteBytes = await fetchRemoteContent(pending.fileId, headRev.revisionId);
+        if (remoteBytes) {
+          await deps.vault.writeFile(file.localPath, remoteBytes);
+          deps.journal.updateFile(pending.fileId, {
+            deletedLocally: false,
+            deleteIntent: null,
+            plaintextSha256: await sha256HexBytes(remoteBytes),
+            lastAppliedRevisionId: headRev.revisionId,
+            pendingOperationId: undefined,
+          });
+          deps.journal.dropPending(current.operationId);
+          deps.journal.resolveConflict(pending.fileId);
+          await deps.journal.persist();
+          return { pushed: 0, skipped: 1, conflicts: 0 };
+        }
+      }
+      if (headId && deps.journal.raw.pending[current.operationId]) {
+        deps.journal.raw.pending[current.operationId] = {
+          ...deps.journal.raw.pending[current.operationId]!,
+          baseRevisionId: headId,
+        };
+      }
       deps.journal.bumpPendingRetry(current.operationId);
       await deps.journal.persist();
-      return { pushed: 0, skipped: 0, conflicts: 1 };
+      return { pushed: 0, skipped: 0, conflicts: 0 };
     }
     await acknowledgeCommit(current, file.localPath, null, response);
     return { pushed: 1, skipped: 0, conflicts: 0 };
@@ -615,6 +652,23 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     errors: string[];
     /** Cursor must stay behind this event so a later cycle can retry it. */
     blocked?: boolean;
+    /** The network failed. Stop this cycle and keep the cursor. */
+    transportDown?: boolean;
+  }
+
+  function fromFault(err: unknown, revisionId: string): ReconcileResult {
+    const attempts = deps.journal.raw.faultAttempts?.[revisionId] ?? 0;
+    const decision = classifySyncFault(err, { contentOpens, attempts });
+    if (decision.action === "retry-cycle") {
+      return { pulled: 0, conflicts: 0, errors: [decision.message], blocked: true, transportDown: true };
+    }
+    if (decision.action === "skip-event") {
+      return { pulled: 0, conflicts: 0, errors: [decision.message], blocked: false };
+    }
+    const bag = deps.journal.raw.faultAttempts ?? {};
+    bag[revisionId] = attempts + 1;
+    deps.journal.raw.faultAttempts = bag;
+    return { pulled: 0, conflicts: 0, errors: [decision.message], blocked: true };
   }
 
   async function reconcileRemoteEvent(
@@ -626,7 +680,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     if (!rev) {
       const loaded = await deps.transport.getRevision(event.revisionId);
       if (!loaded) {
-        return { pulled: 0, conflicts: 0, errors: [`missing revision ${event.revisionId}`], blocked: true };
+        return fromFault(new Error(`missing revision ${event.revisionId}`), event.revisionId);
       }
       rev = loaded;
     }
@@ -695,26 +749,25 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
         await pullRevisionContent(event.fileId, rev);
         return { pulled: 1, conflicts: 0, errors: [] };
       } catch (err) {
-        return { pulled: 0, conflicts: 0, errors: [`pull ${event.revisionId}: ${err instanceof Error ? err.message : String(err)}`], blocked: true };
+        return fromFault(err, event.revisionId);
       }
     }
 
     const localDirty = !!file.pendingOperationId || (await isContentDirty(file));
 
     if (event.eventType === "tombstone") {
-      if (localDirty) {
-        // Edit-vs-delete: preserve local content + remote stays tombstoned.
-        deps.journal.addConflict({
-          fileId: event.fileId,
-          otherPath: null,
-          baseRevisionId: file.lastAppliedRevisionId,
-          remoteHeadRevisionId: rev.revisionId,
-          origin: "edit_vs_delete",
-          createdAt: now(),
-          resolved: false,
-        });
+      if (localDirty && await localIsNewer(file.localPath, rev.createdAt)) {
+        // The local edit is later than the delete. Publish it on top of the tombstone.
+        const pendingId = file.pendingOperationId;
+        if (pendingId && deps.journal.raw.pending[pendingId]) {
+          deps.journal.raw.pending[pendingId] = {
+            ...deps.journal.raw.pending[pendingId]!,
+            baseRevisionId: rev.revisionId,
+          };
+        }
+        deps.journal.resolveConflict(event.fileId);
         await deps.journal.persist();
-        return { pulled: 0, conflicts: 1, errors: [] };
+        return { pulled: 0, conflicts: 0, errors: [] };
       }
       // A folded conflict id can still name the real note. Deleting that path
       // would erase the note the other file id is keeping.
@@ -737,22 +790,37 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       const currentBytes = await deps.vault.readFile(file.localPath).catch(() => null);
       const remoteBytes = await fetchRemoteContent(event.fileId, rev.revisionId);
       if (remoteBytes === null) {
-        return { pulled: 0, conflicts: 0, errors: [`missing remote object for ${rev.revisionId}`], blocked: true };
+        return fromFault(new Error(`blob object missing on server ${rev.revisionId}`), rev.revisionId);
       }
       if (currentBytes === null) {
-        await deps.vault.writeFile(file.localPath, remoteBytes);
-        deps.journal.addConflict({
-          fileId: event.fileId,
-          otherPath: null,
-          baseRevisionId: file.lastAppliedRevisionId,
-          remoteHeadRevisionId: rev.revisionId,
-          origin: "delete_vs_edit",
-          createdAt: now(),
-          resolved: false,
-          remoteText: decodeUtf8(remoteBytes) ?? undefined,
-        });
+        const pending = file.pendingOperationId ? deps.journal.raw.pending[file.pendingOperationId] : undefined;
+        const localMs = typeof pending?.createdAt === "number" ? pending.createdAt : 0;
+        const remoteMs = Date.parse(rev.createdAt);
+        if (Number.isFinite(remoteMs) && remoteMs > localMs) {
+          await deps.vault.writeFile(file.localPath, remoteBytes);
+          if (file.pendingOperationId) {
+            deps.journal.dropPending(file.pendingOperationId);
+          }
+          deps.journal.updateFile(event.fileId, {
+            plaintextSha256: await sha256HexBytes(remoteBytes),
+            lastAppliedRevisionId: rev.revisionId,
+            deletedLocally: false,
+            pendingOperationId: undefined,
+            deleteIntent: null,
+          });
+          deps.journal.resolveConflict(event.fileId);
+          await deps.journal.persist();
+          return { pulled: 1, conflicts: 0, errors: [] };
+        }
+        if (pending && deps.journal.raw.pending[pending.operationId]) {
+          deps.journal.raw.pending[pending.operationId] = {
+            ...deps.journal.raw.pending[pending.operationId]!,
+            baseRevisionId: rev.revisionId,
+          };
+        }
+        deps.journal.resolveConflict(event.fileId);
         await deps.journal.persist();
-        return { pulled: 0, conflicts: 1, errors: [] };
+        return { pulled: 0, conflicts: 0, errors: [] };
       }
       const keepLocal = await localIsNewer(file.localPath, rev.createdAt);
       if (!keepLocal) {
@@ -787,12 +855,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       await applyRemoteRevision(event.fileId, rev, file);
       return { pulled: 1, conflicts: 0, errors: [] };
     } catch (err) {
-      return {
-        pulled: 0,
-        conflicts: 0,
-        errors: [`apply ${event.revisionId}: ${err instanceof Error ? err.message : String(err)}`],
-        blocked: true,
-      };
+      return fromFault(err, event.revisionId);
     }
   }
 
@@ -854,16 +917,11 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     try {
       const got = await fetchRemoteContent(event.fileId, rev.revisionId);
       if (got === null) {
-        return { pulled: 0, conflicts: 0, errors: [`missing remote object for ${rev.revisionId}`], blocked: true };
+        return fromFault(new Error(`blob object missing on server ${rev.revisionId}`), rev.revisionId);
       }
       remoteBytes = got;
     } catch (err) {
-      return {
-        pulled: 0,
-        conflicts: 0,
-        errors: [`echo ${rev.revisionId}: ${err instanceof Error ? err.message : String(err)}`],
-        blocked: true,
-      };
+      return fromFault(err, rev.revisionId);
     }
     const remoteHash = await sha256HexBytes(remoteBytes);
     const localHash = await deps.vault.hashFile(file.localPath);
@@ -1058,12 +1116,72 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
   async function settleOpenConflicts(): Promise<string[]> {
     const errors: string[] = [];
     for (const record of deps.journal.unresolvedConflicts()) {
-      if (record.origin !== "remote_changed" || !record.remoteHeadRevisionId) {
+      if (!record.remoteHeadRevisionId) {
+        deps.journal.resolveConflict(record.fileId);
         continue;
       }
       const file = deps.journal.getFile(record.fileId);
       if (!file) {
         deps.journal.resolveConflict(record.fileId);
+        continue;
+      }
+      if (record.origin === "edit_vs_delete" || record.origin === "delete_vs_edit") {
+        try {
+          const rev = await deps.transport.getRevision(record.remoteHeadRevisionId);
+          if (!rev) {
+            deps.journal.resolveConflict(record.fileId);
+            continue;
+          }
+          const newerLocal = record.origin === "edit_vs_delete" && await localIsNewer(file.localPath, rev.createdAt);
+          if (newerLocal) {
+            const pendingId = file.pendingOperationId;
+            if (pendingId && deps.journal.raw.pending[pendingId]) {
+              deps.journal.raw.pending[pendingId] = {
+                ...deps.journal.raw.pending[pendingId]!,
+                baseRevisionId: rev.revisionId,
+              };
+            }
+            deps.journal.resolveConflict(record.fileId);
+            continue;
+          }
+          if (record.origin === "edit_vs_delete" || rev.isTombstone) {
+            await deps.vault.snapshot(file.localPath, "remote-delete");
+            await safeDeleteLocal(file.localPath);
+            if (file.pendingOperationId) {
+              deps.journal.dropPending(file.pendingOperationId);
+            }
+            deps.journal.updateFile(record.fileId, {
+              deletedLocally: true,
+              plaintextSha256: null,
+              lastAppliedRevisionId: rev.revisionId,
+              pendingOperationId: undefined,
+            });
+            deps.journal.resolveConflict(record.fileId);
+            continue;
+          }
+          const remoteBytes = await fetchRemoteContent(record.fileId, rev.revisionId);
+          const pending = file.pendingOperationId ? deps.journal.raw.pending[file.pendingOperationId] : undefined;
+          const localMs = typeof pending?.createdAt === "number" ? pending.createdAt : 0;
+          if (remoteBytes && Date.parse(rev.createdAt) > localMs) {
+            await deps.vault.writeFile(file.localPath, remoteBytes);
+            if (file.pendingOperationId) {
+              deps.journal.dropPending(file.pendingOperationId);
+            }
+            deps.journal.updateFile(record.fileId, {
+              plaintextSha256: await sha256HexBytes(remoteBytes),
+              lastAppliedRevisionId: rev.revisionId,
+              deletedLocally: false,
+              deleteIntent: null,
+              pendingOperationId: undefined,
+            });
+          }
+          deps.journal.resolveConflict(record.fileId);
+        } catch (err) {
+          errors.push(classifySyncFault(err, { contentOpens, attempts: 0 }).message);
+        }
+        continue;
+      }
+      if (record.origin !== "remote_changed") {
         continue;
       }
       try {
@@ -1079,7 +1197,14 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
           origin: "remote_changed",
         });
       } catch (err) {
-        errors.push(`open note: ${err instanceof Error ? err.message : String(err)}`);
+        const decision = classifySyncFault(err, {
+          contentOpens,
+          attempts: deps.journal.raw.faultAttempts?.[record.remoteHeadRevisionId] ?? 0,
+        });
+        errors.push(decision.message);
+        if (decision.action === "skip-event") {
+          deps.journal.resolveConflict(record.fileId);
+        }
       }
     }
     return errors;
@@ -1451,11 +1576,13 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     if (bytes === null) {
       return null;
     }
-    return contentEnvelopeDecrypt({
+    const plain = await contentEnvelopeDecrypt({
       payload: bytes,
       key: deps.keyMaterial.contentKey,
       identity: { vaultId: deps.vaultId, fileId, revisionId, keyEpoch: meta.keyEpoch },
     });
+    contentOpens += 1;
+    return plain;
   }
 
   async function safeDeleteLocal(path: string): Promise<void> {

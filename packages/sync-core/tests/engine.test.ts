@@ -4,7 +4,7 @@
  * durable checkpoints, no-op zero-PUT cycles, CAS merges, conflict copies.
  */
 import { describe, expect, it } from "vitest";
-import { contentEnvelopeDecrypt, sha256HexBytes } from "@vaultbridge/crypto";
+import { contentEnvelopeDecrypt, contentEnvelopeEncrypt, randomKey, sha256HexBytes } from "@vaultbridge/crypto";
 import type {
   ChangesResponse,
   CommitRequest,
@@ -279,9 +279,48 @@ describe("pull cycle", () => {
 
     const report = await h.engine.runCycle();
     expect(report.started).toBe(true);
-    expect(report.errors.some((line) => line.includes("CryptoError"))).toBe(true);
+    expect(report.errors.some((line) => line.includes("could not be read"))).toBe(true);
     expect(dec.decode(await h.vault.readFile("notes/a.md"))).toBe("keep");
-    expect(h.journal.unresolvedConflicts()).toHaveLength(1);
+    expect(h.journal.unresolvedConflicts()).toHaveLength(0);
+  });
+
+  it("skips a corrupt note and still downloads the next one", async () => {
+    const h = harness();
+    await h.vault.writeFile("notes/a.md", enc.encode("kept"));
+    await h.engine.runCycle();
+    const bad = await h.server.otherDeviceWrite("device-B", "bbbbbbbbbbbbbbbb", "notes/bad.md", "nope");
+    const meta = await h.server.getRevision(bad.revisionId);
+    h.server.objects.set(meta!.blobObjectId!, enc.encode("{\"not\":\"an envelope\"}"));
+    await h.server.otherDeviceWrite("device-C", "cccccccccccccccc", "notes/c.md", "arrived");
+
+    const report = await h.engine.runCycle();
+    expect(report.errors.some((line) => line.includes("could not be read"))).toBe(true);
+    expect(dec.decode(await h.vault.readFile("notes/a.md"))).toBe("kept");
+    expect(dec.decode(await h.vault.readFile("notes/c.md"))).toBe("arrived");
+    expect(await h.vault.exists("notes/bad.md")).toBe(false);
+  });
+
+  it("does not move past a sealed note when nothing else has opened", async () => {
+    const h = harness();
+    await h.vault.writeFile("notes/a.md", enc.encode("base"));
+    await h.engine.runCycle();
+    const cursor = h.journal.cursor;
+    const foreign = await h.server.otherDeviceWrite("device-B", "bbbbbbbbbbbbbbbb", "notes/secret.md", "hidden");
+    const meta = await h.server.getRevision(foreign.revisionId);
+    const sealed = await contentEnvelopeEncrypt({
+      plaintext: enc.encode("hidden"),
+      key: randomKey(),
+      identity: { vaultId: VAULT_ID, fileId: "bbbbbbbbbbbbbbbb", revisionId: foreign.revisionId, keyEpoch: 1 },
+    });
+    h.server.objects.set(meta!.blobObjectId!, sealed.payload);
+
+    const report = await h.engine.runCycle();
+    expect(report.cursor).toBeGreaterThan(cursor);
+    expect(report.errors.some((line) => line.includes("will retry"))).toBe(true);
+    expect(await h.vault.exists("notes/secret.md")).toBe(false);
+    const again = await h.engine.runCycle();
+    expect(again.cursor).toBe(report.cursor);
+    expect(await h.vault.exists("notes/secret.md")).toBe(false);
   });
 
   it("publishes a later local binary and does not add a second file", async () => {
@@ -305,27 +344,21 @@ describe("pull cycle", () => {
 });
 
 describe("deletion divergence", () => {
-  it("local delete vs remote edit: conflict, remote edit preserved via copy (T05 shape)", async () => {
+  it("local delete vs remote edit: the later delete is published", async () => {
     const h = harness();
     await h.vault.writeFile("notes/a.md", enc.encode("base"));
     await h.engine.runCycle();
     const file = firstFile(h);
-    const remoteRev = (await h.server.otherDeviceWrite("device-B", file.fileId, "notes/a.md", "edited by B")).revisionId;
+    await h.server.otherDeviceWrite("device-B", file.fileId, "notes/a.md", "edited by B");
     await h.vault.deleteFile("notes/a.md");
 
     const r = await h.engine.runCycle();
-    expect(r.pushes).toBe(0);
-    const conflicts = h.journal.unresolvedConflicts();
-    expect(conflicts).toHaveLength(1);
-    expect(conflicts[0]!.origin).toBe("delete_vs_edit");
-    expect(conflicts[0]!.otherPath).toBeNull();
-    const head = (await h.server.getFileHead(file.fileId))!;
-    expect(head.isDeleted).toBe(false);
-    expect(head.headRevisionId).toBe(remoteRev);
-    await expect(headPlaintext(h, file.fileId)).resolves.toBe("edited by B");
-    expect(dec.decode(await h.vault.readFile("notes/a.md"))).toBe("edited by B");
-    expect(conflictCopiesIn(h.vault)).toEqual([]);
-    expect(h.engine.status()).toBe("CONFLICT");
+    expect(r.pushes).toBe(1);
+    expect(r.conflicts).toBe(0);
+    expect(h.journal.unresolvedConflicts()).toHaveLength(0);
+    expect(await h.vault.exists("notes/a.md")).toBe(false);
+    expect((await h.server.getFileHead(file.fileId))!.isDeleted).toBe(true);
+    expect(h.engine.status()).toBe("READY");
   });
 
   it("remote tombstone vs clean local: file removed, journal tombstoned", async () => {
@@ -350,22 +383,23 @@ describe("deletion divergence", () => {
     expect((await h.server.getFileHead(file.fileId))!.isDeleted).toBe(true);
   });
 
-  it("remote tombstone vs locally-modified file: local edit preserved (edit_vs_delete)", async () => {
+  it("publishes a local edit that is later than the other device's delete", async () => {
     const h = harness();
     await h.vault.writeFile("notes/a.md", enc.encode("base"));
     await h.engine.runCycle();
     const file = firstFile(h);
     await h.server.otherDeviceTombstone("device-B", file.fileId, "notes/a.md");
+    await new Promise((resolve) => setTimeout(resolve, 5));
     await h.vault.writeFile("notes/a.md", enc.encode("precious local edit"));
 
     const r = await h.engine.runCycle();
-    expect(r.pushes).toBe(0);
+    expect(r.conflicts).toBe(0);
+    expect(h.journal.unresolvedConflicts()).toHaveLength(0);
     expect(dec.decode(await h.vault.readFile("notes/a.md"))).toBe("precious local edit");
     expect(h.journal.getFile(file.fileId)!.deletedLocally).toBe(false);
-    // remote stays tombstoned; the divergence is flagged, not resolved silently
-    expect((await h.server.getFileHead(file.fileId))!.isDeleted).toBe(true);
-    expect(h.journal.unresolvedConflicts()[0]?.origin).toBe("edit_vs_delete");
-    expect(h.engine.status()).toBe("CONFLICT");
+    expect(r.pushes).toBe(1);
+    expect((await h.server.getFileHead(file.fileId))!.isDeleted).toBe(false);
+    expect(h.engine.status()).toBe("READY");
   });
 
   it("does not delete a note when a superseded id is tombstoned", async () => {
@@ -635,7 +669,9 @@ describe("cost + safety guards", () => {
     const h = harness();
     await h.vault.writeFile("notes/a.md", enc.encode("durability first"));
     h.persistence.failNextSave = true;
-    await expect(h.engine.runCycle()).rejects.toThrow(/disk full/);
+    const report = await h.engine.runCycle();
+    expect(report.errors[0]).toContain("will retry");
+    expect(report.pushes).toBe(0);
     expect(h.server.uploadPuts).toBe(0);
     expect(h.server.commits).toBe(0);
   });

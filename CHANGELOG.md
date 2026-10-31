@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.13
+
+- Sync keeps going when one note cannot be read. A dropped connection retries on the next poll. A later edit or delete replaces the older one without asking which copy to keep.
+
 ## 0.2.12
 
 - A note encrypted under a different file id still opens, so one undecryptable record no longer stops the rest of the sync. The later edit is written on the next cycle.

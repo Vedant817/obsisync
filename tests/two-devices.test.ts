@@ -307,16 +307,12 @@ describe("two-device integration over the real worker (WP-06)", () => {
     await devA.engine.runCycle(); // tombstone r4
 
     const rDiv = await devB.engine.runCycle();
-    expect(rDiv.pushes).toBe(0);
-    expect(devB.engine.unresolvedConflicts()[0]?.origin).toBe("edit_vs_delete");
-    expect(dec.decode(await vaultB.readFile("notes/temp.md"))).toBe("guest divergence");
-    expect((await headMeta(harness, admin.vaultId, admin.token, fileId)).isDeleted).toBe(true);
-
-    await devB.engine.resolveConflict(fileId, "remote");
+    expect(rDiv.conflicts).toBe(0);
     expect(devB.engine.unresolvedConflicts()).toHaveLength(0);
     expect(await vaultB.exists("notes/temp.md")).toBe(false);
     expect(devB.journal.getFile(fileId)!.deletedLocally).toBe(true);
     expect(devB.journal.getFile(fileId)!.pendingOperationId).toBeUndefined();
+    expect((await headMeta(harness, admin.vaultId, admin.token, fileId)).isDeleted).toBe(true);
 
     const rAfter = await devB.engine.runCycle();
     expect(rAfter.pushes).toBe(0);
