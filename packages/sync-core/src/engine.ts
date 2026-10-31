@@ -145,8 +145,8 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
         changes = await deps.transport.fetchChanges(after, 200);
       } catch (err) {
         if (err instanceof SyncTransportUnavailableError) {
-          // Degrade cleanly: durable cursor survives; next cycle resumes.
-          deps.journal.pause(`unavailable:${err.reason}`);
+          // Cursor stays put. The next poll retries. A blip must not latch Pause.
+          currentStatus = "OFFLINE";
         } else {
           errors.push(`fetch changes after ${after}: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -175,42 +175,45 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     }
 
     // 5. Push pending operations, oldest first, under budget + pause checks.
-    currentStatus = "SYNCING";
-    for (const pending of deps.journal.pendingList()) {
-      if (deps.journal.pendingList().length > budget.maxPendingForAutoRun) {
-        deps.journal.pause("bulk_pending_wave");
-        break;
-      }
-      const pauseReason = opts.pauseRequested?.() ?? deps.journal.raw.pausedReason;
-      if (pauseReason) {
-        deps.journal.pause(pauseReason);
-        break;
-      }
-      if (pushes >= budget.maxUploadsPerCycle) {
-        deps.journal.pause("cycle_budget_exhausted");
-        break;
-      }
-      try {
-        const outcome = await pushPending(pending, {
-          autoMerge: opts.autoMerge !== false,
-          maxObjectBytes: opts.maxObjectBytes ?? DEFAULT_SYNC_CYCLE_OPTIONS.maxObjectBytes!,
-          countsAsPut: () => {
-            dataObjectPuts += 1;
-          },
-        });
-        pushes += outcome.pushed;
-        noAcksSkipped += outcome.skipped;
-        conflicts += outcome.conflicts;
-      } catch (err) {
-        if (err instanceof SyncTransportUnavailableError) {
-          // Stop pushing and persist the pause; pendings survive for the next run.
-          deps.journal.pause(`unavailable:${err.reason}`);
-          await deps.journal.persist();
+    // A failed fetch already means the network is down. Leave pending ops queued.
+    if (currentStatus !== "OFFLINE") {
+      currentStatus = "SYNCING";
+      for (const pending of deps.journal.pendingList()) {
+        if (deps.journal.pendingList().length > budget.maxPendingForAutoRun) {
+          deps.journal.pause("bulk_pending_wave");
           break;
         }
-        errors.push(`push ${pending.operationId}: ${err instanceof Error ? err.message : String(err)}`);
-        deps.journal.bumpPendingRetry(pending.operationId);
-        await deps.journal.persist();
+        const pauseReason = opts.pauseRequested?.() ?? deps.journal.raw.pausedReason;
+        if (pauseReason) {
+          deps.journal.pause(pauseReason);
+          break;
+        }
+        if (pushes >= budget.maxUploadsPerCycle) {
+          deps.journal.pause("cycle_budget_exhausted");
+          break;
+        }
+        try {
+          const outcome = await pushPending(pending, {
+            autoMerge: opts.autoMerge !== false,
+            maxObjectBytes: opts.maxObjectBytes ?? DEFAULT_SYNC_CYCLE_OPTIONS.maxObjectBytes!,
+            countsAsPut: () => {
+              dataObjectPuts += 1;
+            },
+          });
+          pushes += outcome.pushed;
+          noAcksSkipped += outcome.skipped;
+          conflicts += outcome.conflicts;
+        } catch (err) {
+          if (err instanceof SyncTransportUnavailableError) {
+            // Pending op stays queued. The next poll retries the same operation.
+            currentStatus = "OFFLINE";
+            await deps.journal.persist();
+            break;
+          }
+          errors.push(`push ${pending.operationId}: ${err instanceof Error ? err.message : String(err)}`);
+          deps.journal.bumpPendingRetry(pending.operationId);
+          await deps.journal.persist();
+        }
       }
     }
 
@@ -230,7 +233,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       currentStatus = "CONFLICT";
     } else if (deps.journal.raw.pausedReason) {
       currentStatus = "PAUSED";
-    } else {
+    } else if (currentStatus !== "OFFLINE") {
       currentStatus = "READY";
     }
     return {

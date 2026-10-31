@@ -640,8 +640,8 @@ describe("normalizeLocalPath (spec §9.7)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Outage handling (spec §12.2): transport failures degrade to a durable pause
-// instead of error-storming every pending operation.
+// Outage handling (spec §12.2): a dropped request keeps the cursor and the
+// pending op, then the next poll retries. It does not latch Pause.
 // ---------------------------------------------------------------------------
 
 class OutageDelegate implements SyncTransport {
@@ -694,7 +694,7 @@ class OutageDelegate implements SyncTransport {
 }
 
 describe("outage handling", () => {
-  it("pauses cleanly when staging uploads fail and keeps pendings durable", async () => {
+  it("keeps a pending upload and retries it after a dropped request", async () => {
     const h = harness();
     await h.vault.writeFile("notes/a.md", enc.encode("outage"));
     const engine = createSyncEngine({
@@ -707,14 +707,28 @@ describe("outage handling", () => {
     });
     const report = await engine.runCycle();
     expect(report.pushes).toBe(0);
-    expect(report.errors).toEqual([]); // digested into a pause, not an error storm
-    expect(h.journal.raw.pausedReason).toBe("unavailable:network_failure");
+    expect(report.errors).toEqual([]);
+    expect(report.status).toBe("OFFLINE");
+    expect(h.journal.raw.pausedReason).toBeNull();
     expect(Object.keys(h.journal.raw.pending)).toHaveLength(1);
     expect(h.server.commits).toBe(0);
-    expect(engine.status()).toBe("PAUSED");
+    expect(engine.status()).toBe("OFFLINE");
+
+    const retry = createSyncEngine({
+      vault: h.vault,
+      transport: h.server,
+      journal: h.journal,
+      vaultId: VAULT_ID,
+      deviceId: "device-A",
+      keyMaterial: h.keyMaterial,
+    });
+    const again = await retry.runCycle();
+    expect(again.pushes).toBe(1);
+    expect(again.status).toBe("READY");
+    expect(h.journal.raw.pausedReason).toBeNull();
   });
 
-  it("pauses when the change feed is unreachable, with revert-safe cursor", async () => {
+  it("retries the change feed after it was unreachable, without moving the cursor", async () => {
     const h = harness();
     await h.server.otherDeviceWrite("device-B", "aaaaaaaaaaaaaaaa", "remote.md", "from B");
     const outageEngine = createSyncEngine({
@@ -727,11 +741,11 @@ describe("outage handling", () => {
     });
     const report = await outageEngine.runCycle();
     expect(report.started).toBe(true);
+    expect(report.status).toBe("OFFLINE");
     expect(h.journal.cursor).toBe(0); // nothing acked mid-outage
     expect(h.vault.files.size).toBe(0);
-    expect(h.journal.raw.pausedReason).toBe("unavailable:network_failure");
+    expect(h.journal.raw.pausedReason).toBeNull();
 
-    await outageEngine.resume();
     const recovery = createSyncEngine({
       vault: h.vault,
       transport: h.server,
@@ -754,13 +768,13 @@ describe("review fixes: retries, cursor, paths, deletes", () => {
     h.server.loseNextCommitResponse = true;
     const lost = await h.engine.runCycle();
     expect(lost.pushes).toBe(0);
-    expect(h.journal.raw.pausedReason).toBe("unavailable:network_failure");
+    expect(lost.status).toBe("OFFLINE");
+    expect(h.journal.raw.pausedReason).toBeNull();
     expect(h.server.revisions.size).toBe(1);
     expect(Object.keys(h.journal.raw.pending)).toHaveLength(1);
 
     // The echo is already behind the cursor, so only the pinned replay can ack.
     h.journal.setCursor(100);
-    await h.engine.resume();
     const again = await h.engine.runCycle();
     expect(again.errors).toEqual([]);
     expect(again.pushes).toBe(0);

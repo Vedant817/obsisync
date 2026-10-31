@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.10
+
+- A dropped network request no longer leaves sync paused. The next poll retries, and opening the app retries immediately. Pause stays on only when the Pause toggle is on.
+
 ## 0.2.9
 
 - Deleting notes and closing Obsidian keeps those deletes. The other device, and this device after a restart, no longer put the same notes back when nobody edited them.

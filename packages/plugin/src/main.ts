@@ -72,11 +72,20 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
       this.engine = engine;
       if (this.settings.uploadsPaused) {
         await engine.pause("uploads paused");
+      } else {
+        // A dropped request used to latch the journal paused. The toggle is off,
+        // so the next poll has to run.
+        await engine.resume();
       }
       this.realtime = new RealtimeSync(async () => engine.runCycle(cycleOptions()), (outcome) => {
         void this.showOutcome(outcome);
       });
       this.wireVault();
+      this.registerDomEvent(document, "visibilitychange", () => {
+        if (document.visibilityState === "visible" && !this.settings.uploadsPaused) {
+          this.realtime?.noteChange();
+        }
+      });
       const pollMs = Platform.isMobile && this.settings.pollMs === 1000 ? 5_000 : this.settings.pollMs;
       this.poll = setInterval(() => this.realtime?.noteChange(), pollMs);
       this.registerInterval(this.poll as unknown as number);

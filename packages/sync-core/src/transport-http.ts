@@ -11,7 +11,7 @@
  *  - Commit maps 409 **with a CONFLICT envelope** to a normal response: CAS
  *    divergence is data, not a failure.
  *  - Network faults, 429, 401/403, 5xx => SyncTransportUnavailableError so
- *    the engine pauses cleanly instead of error-storming every pending op.
+ *    the engine reports offline and the next poll retries the same work.
  *  - Any other >= 400 => HttpTransportError (sharp failure for callers).
  */
 import { fromBase64 } from "@vaultbridge/crypto";
