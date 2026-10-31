@@ -324,6 +324,46 @@ describe("deletion divergence", () => {
     expect(h.journal.unresolvedConflicts()[0]?.origin).toBe("edit_vs_delete");
     expect(h.engine.status()).toBe("CONFLICT");
   });
+
+  it("does not delete a note when a superseded id is tombstoned", async () => {
+    const h = harness();
+    await h.vault.writeFile("notes/a.md", enc.encode("keep"));
+    await h.engine.runCycle();
+    const file = firstFile(h);
+    const parked = "parkedfileid0001";
+    h.journal.raw.files[parked] = {
+      fileId: parked,
+      localPath: "notes/a.md",
+      lastAppliedRevisionId: null,
+      plaintextSha256: null,
+      deletedLocally: false,
+      supersededBy: file.fileId,
+    };
+    await h.server.otherDeviceTombstone("device-B", parked, "notes/a.md");
+
+    await h.engine.runCycle();
+
+    expect(dec.decode(await h.vault.readFile("notes/a.md"))).toBe("keep");
+    expect((await h.server.getFileHead(file.fileId))!.isDeleted).toBe(false);
+  });
+
+  it("downloads notes again when this device lost most of them", async () => {
+    const h = harness();
+    await h.vault.writeFile("Companies Resource/a.md", enc.encode("a"));
+    await h.vault.writeFile("Imagine Cup/b.md", enc.encode("b"));
+    await h.vault.writeFile("System Design Notes/c.md", enc.encode("c"));
+    await h.engine.runCycle();
+    await h.vault.deleteFile("Companies Resource/a.md");
+    await h.vault.deleteFile("Imagine Cup/b.md");
+    await h.vault.deleteFile("System Design Notes/c.md");
+
+    const report = await h.engine.runCycle();
+
+    expect(report.pushes).toBe(0);
+    expect(dec.decode(await h.vault.readFile("Companies Resource/a.md"))).toBe("a");
+    expect(dec.decode(await h.vault.readFile("Imagine Cup/b.md"))).toBe("b");
+    expect(dec.decode(await h.vault.readFile("System Design Notes/c.md"))).toBe("c");
+  });
 });
 
 describe("rename handling", () => {

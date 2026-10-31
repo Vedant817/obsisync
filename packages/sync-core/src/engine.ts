@@ -118,6 +118,10 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     }
     currentStatus = "SCANNING";
 
+    // A device that lost most of its notes must download them again.
+    // Scanning first would upload those gaps as deletes.
+    await restoreMissingNotes();
+
     // 2. Capture local changes (full-scan reconciliation, deletion rules).
     const scan = await collectCandidateChanges(deps.vault, deps.journal.raw);
     mutateOnCapture(deps.journal, scan.candidates, now());
@@ -703,8 +707,14 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
         await deps.journal.persist();
         return { pulled: 0, conflicts: 1, errors: [] };
       }
-      await deps.vault.snapshot(file.localPath, "remote-delete");
-      await safeDeleteLocal(file.localPath);
+      // A folded conflict id can still name the real note. Deleting that path
+      // would erase the note the other file id is keeping.
+      const owner = deps.journal.fileIdForPath(file.localPath);
+      const keepPath = Boolean(file.supersededBy) || (owner !== null && owner !== event.fileId);
+      if (!keepPath) {
+        await deps.vault.snapshot(file.localPath, "remote-delete");
+        await safeDeleteLocal(file.localPath);
+      }
       deps.journal.updateFile(event.fileId, {
         deletedLocally: true,
         lastAppliedRevisionId: rev.revisionId,
@@ -1032,6 +1042,97 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       createdAt: now(),
       resolved: false,
     });
+  }
+
+  /**
+ * The server still has notes this device does not. Download them before the
+ * scanner can treat the gap as a vault-wide delete.
+ * One or two missing notes still follow the normal delete path.
+ */
+async function restoreMissingNotes(): Promise<void> {
+    const listed = await deps.vault.listFiles();
+    const onDisk = new Set(
+      listed
+        .map((meta) => meta.path.replace(/\\/g, "/"))
+        .filter((path) => !path.includes(CONFLICT_COPY_MARK)),
+    );
+    const liveJournal = Object.values(deps.journal.raw.files).filter(
+      (file) => !file.deletedLocally && !file.supersededBy,
+    ).length;
+    if (deps.journal.cursor === 0 && liveJournal === 0) {
+      return;
+    }
+    if (onDisk.size > 1 && onDisk.size + 2 >= liveJournal) {
+      return;
+    }
+
+    const latest = new Map<string, ChangeEventWire>();
+    let after = 0;
+    for (let page = 0; page < 1000; page++) {
+      const batch = await deps.transport.fetchChanges(after, 200);
+      if (batch.events.length === 0) {
+        break;
+      }
+      for (const event of batch.events) {
+        latest.set(event.fileId, event);
+        after = event.seq;
+      }
+      if (!batch.hasMore) {
+        break;
+      }
+    }
+
+    const missing: ChangeEventWire[] = [];
+    for (const event of latest.values()) {
+      if (event.eventType === "tombstone" || event.revision?.isTombstone) {
+        continue;
+      }
+      const known = deps.journal.getFile(event.fileId);
+      const path = known?.localPath;
+      if (path && onDisk.has(path.replace(/\\/g, "/"))) {
+        continue;
+      }
+      if (!path) {
+        missing.push(event);
+        continue;
+      }
+      if (!(await deps.vault.exists(path))) {
+        missing.push(event);
+      }
+    }
+    const liveMissing = missing.length;
+    const serverLive = [...latest.values()].filter(
+      (event) => event.eventType !== "tombstone" && !event.revision?.isTombstone,
+    ).length;
+    if (liveMissing < 3 || liveMissing + 1 < serverLive) {
+      return;
+    }
+
+    for (const event of missing) {
+      let rev = event.revision;
+      if (!rev) {
+        const loaded = await deps.transport.getRevision(event.revisionId);
+        if (!loaded || loaded.isTombstone) {
+          continue;
+        }
+        rev = loaded;
+      }
+      const known = deps.journal.getFile(event.fileId);
+      if (known?.pendingOperationId) {
+        deps.journal.dropPending(known.pendingOperationId);
+      }
+      if (known) {
+        deps.journal.updateFile(event.fileId, { deletedLocally: false, supersededBy: undefined });
+        const owner = deps.journal.fileIdForPath(known.localPath);
+        if (owner && owner !== event.fileId && !(await deps.vault.exists(known.localPath))) {
+          deps.journal.forgetFile(owner);
+        }
+        await applyRemoteRevision(event.fileId, rev, deps.journal.getFile(event.fileId)!);
+        continue;
+      }
+      await pullRevisionContent(event.fileId, rev);
+    }
+    await deps.journal.persist();
   }
 
   /** Rename leftover `.vb-conflict-` files back to the note they belong to. */

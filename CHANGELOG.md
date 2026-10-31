@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.5
+
+- If this device is missing most of the notes the server still has, it downloads them again instead of deleting them everywhere.
+- A tombstone for a replaced copy no longer deletes the real note.
+
 ## 0.2.4
 
 - GitHub Actions builds the release and attests `main.js` and `styles.css`.
