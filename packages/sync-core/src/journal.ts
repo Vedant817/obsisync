@@ -68,6 +68,31 @@ export class SyncJournal {
     delete this.data.conflicts[fileId];
   }
 
+  /**
+   * Keep a file id in the journal without a path. Used when its bytes were
+   * merged into another note, so a later pull does not create a second file.
+   */
+  foldAway(fileId: string, supersededBy: string, revisionId: string | null): void {
+    const previous = this.data.files[fileId];
+    if (previous && this.data.pathToFileId[previous.localPath] === fileId) {
+      delete this.data.pathToFileId[previous.localPath];
+    }
+    for (const [operationId, pending] of Object.entries(this.data.pending)) {
+      if (pending.fileId === fileId) {
+        delete this.data.pending[operationId];
+      }
+    }
+    this.data.files[fileId] = {
+      fileId,
+      localPath: previous?.localPath ?? supersededBy,
+      lastAppliedRevisionId: revisionId,
+      plaintextSha256: previous?.plaintextSha256 ?? null,
+      deletedLocally: true,
+      supersededBy,
+      pendingOperationId: undefined,
+    };
+  }
+
   trackFile(state: FileState): void {
     const owner = this.data.pathToFileId[state.localPath];
     if (owner && owner !== state.fileId) {

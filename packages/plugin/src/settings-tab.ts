@@ -50,22 +50,28 @@ export function renderSettings(container: HTMLElement, host: SettingsHost, redra
   container.addClass("obsisync-settings");
   container.createEl("h2", { text: "ObsiSync" });
   const ready = Boolean(host.settings.deviceToken && host.settings.vaultId);
+  const locked = ready && !host.settings.recoveryPhrase && !host.settings.passphrase;
   container.createEl("p", {
     cls: "obsisync-live",
-    text: ready
-      ? "Realtime sync is on. Edits upload on their own, and this device checks for remote changes about once a second."
-      : "This device is not in a vault yet. Scan a pairing QR, type the codes, or paste a one-time setup token.",
+    text: !ready
+      ? "This device is not in a vault yet. Scan a pairing QR, type the codes, or paste a one-time setup token."
+      : locked
+        ? "This computer is signed in to your vault. Paste the recovery phrase below to unlock it and to show a pairing QR."
+        : host.settings.uploadsPaused
+          ? "Sync is paused. Turn Pause sync off when you want notes to move again. You can still create a pairing code."
+          : "Realtime sync is on. Edits upload on their own, and this device checks for remote changes about once a second.",
   });
 
-  new Setting(container)
+  const address = new Setting(container)
     .setName("API address")
-    .setDesc("Already set to the ObsiSync server. A phone on mobile data uses this same address. Reload Obsidian after you change it.")
-    .addText((text) => {
-      text.setValue(host.settings.serverUrl).onChange(async (value) => {
-        host.settings.serverUrl = value.trim() || PRODUCTION_SERVER_URL;
-        await host.saveSettings();
-      });
+    .setDesc("Already set to the ObsiSync server. A phone on mobile data uses this same address. Reload Obsidian after you change it.");
+  address.settingEl.addClass("obsisync-url");
+  address.addText((text) => {
+    text.setValue(host.settings.serverUrl).onChange(async (value) => {
+      host.settings.serverUrl = value.trim() || PRODUCTION_SERVER_URL;
+      await host.saveSettings();
     });
+  });
 
   if (!ready) {
     renderJoin(container, host);
@@ -73,7 +79,10 @@ export function renderSettings(container: HTMLElement, host: SettingsHost, redra
     return;
   }
 
-  renderRecovery(container, host);
+  renderRecovery(container, host, redraw);
+  if (locked) {
+    return;
+  }
   renderInvite(container, host, redraw);
   renderPause(container, host);
   renderStatus(container, host);
@@ -164,17 +173,25 @@ function renderBootstrap(container: HTMLElement, host: SettingsHost): void {
   });
 }
 
-function renderRecovery(container: HTMLElement, host: SettingsHost): void {
+function renderRecovery(container: HTMLElement, host: SettingsHost, redraw: () => void): void {
+  const locked = !host.settings.recoveryPhrase && !host.settings.passphrase;
   container.createEl("h3", { text: "Recovery phrase" });
   container.createEl("p", {
-    text: "Type this phrase on the second device. It unwraps the vault key. It stays on this device only.",
+    text: locked
+      ? "Paste the recovery phrase from the first setup, then click outside the box. It unlocks this computer and is included in the pairing QR."
+      : "This phrase unlocks the vault on a new device. It stays on this device. The pairing QR includes it, so keep that screen private.",
   });
   const box = container.createEl("textarea", { cls: "obsisync-secret" });
   box.value = host.settings.recoveryPhrase;
   box.rows = 3;
   box.addEventListener("change", () => {
     host.settings.recoveryPhrase = box.value.trim();
-    void host.saveSettings();
+    void host.saveSettings().then(async () => {
+      if (host.settings.recoveryPhrase) {
+        await host.start();
+        redraw();
+      }
+    });
   });
 }
 
@@ -258,7 +275,7 @@ function renderConflicts(container: HTMLElement, host: SettingsHost, redraw: () 
   for (const row of rows) {
     const setting = new Setting(container)
       .setName(row.path)
-      .setDesc(`${row.origin}${row.otherPath ? `. Other copy: ${row.otherPath}` : ""}`);
+      .setDesc("Both edits are in this note. Keep mine uses this device. Keep theirs uses the other device.");
     setting.addButton((button) => {
       button.setButtonText("Keep mine").onClick(() => {
         void host.resolveConflict(row.fileId, "local").then(redraw);

@@ -63,7 +63,7 @@ Clearing Obsidian's cache does not remove that file. Deleting the ObsiSync plugi
 
 A wrong recovery phrase uses up that pairing code and adds a device that never saved its token. Create another code, then revoke the extra device from **Refresh vault info**.
 
-If the same note was edited on both devices, ObsiSync keeps both and asks you to choose **Keep mine** or **Keep theirs**. Identical notes are not saved a second time.
+If the same note was edited on both devices, both edits stay in that one note. Obsidian asks you to choose **Keep mine** or **Keep theirs**. The file name does not change, and an identical note is not saved a second time.
 
 **Pause sync** holds uploads and downloads until you turn it off. Leave it off for normal use.
 
@@ -100,3 +100,4 @@ Obsidian no longer accepts a pull request that edits `community-plugins.json`. T
 7. Agree to the developer policies and submit.
 
 The directory may reject a name that starts with "Obsi". If the review says that, change the display name and submit again. The plugin id cannot contain `obsidian`.
+

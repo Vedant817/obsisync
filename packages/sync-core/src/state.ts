@@ -28,6 +28,11 @@ export interface FileState {
   plaintextSha256: string | null;
   pendingOperationId?: string;
   deletedLocally: boolean;
+  /**
+   * This file id was folded into another note. It must not own a path, and
+   * later revisions are merged into `supersededBy` instead of a second file.
+   */
+  supersededBy?: string;
   /** Optimization inputs only — never proof of identity (spec §9.2). */
   lastSyncedSize?: number;
   lastSyncedMtime?: number;
@@ -67,8 +72,12 @@ export interface PendingOperation {
 /** device-only record of an unresolved divergence (spec §9.6/§9.7). */
 export interface ConflictRecord {
   fileId: FileId;
-  /** Path of the conflict copy holding the OTHER version (remote or local). */
+  /** Unused. Older journals may still name a conflict copy. New conflicts keep one path. */
   otherPath: string | null;
+  /** This device's text before a same-note merge. Keep mine writes it back. */
+  localText?: string;
+  /** The other device's text. Keep theirs writes it back when the server copy is gone. */
+  remoteText?: string;
   baseRevisionId: RevisionId | null;
   remoteHeadRevisionId: RevisionId | null;
   origin: "remote_changed" | "delete_vs_edit" | "edit_vs_delete" | "rename_divergence";

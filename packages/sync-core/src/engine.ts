@@ -100,6 +100,10 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     let conflicts = 0;
     let dataObjectPuts = 0;
 
+    // Repair renamed conflict copies before anything else, including while paused.
+    // Those names were showing up as the notes themselves.
+    await foldConflictCopies();
+
     // 1. Validate: paused engines never start (spec §9.1 PAUSED state).
     if (deps.journal.raw.pausedReason) {
       currentStatus = "PAUSED";
@@ -250,6 +254,10 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       await deps.journal.persist();
       return { pushed: 0, skipped: 1, conflicts: 0 };
     }
+    const openConflict = deps.journal.raw.conflicts[pending.fileId];
+    if (openConflict && !openConflict.resolved) {
+      return { pushed: 0, skipped: 1, conflicts: 0 };
+    }
 
     const currentHash = await deps.vault.hashFile(file.localPath);
     const contentBytes = currentHash === null ? null : await deps.vault.readFile(file.localPath);
@@ -353,37 +361,26 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
           outgoingHash = await sha256HexBytes(merged.bytes);
           outgoingBase = remoteHeadId; // merged revision spans remote; CAS onto it
         } else if (merged.remoteBytes !== undefined) {
-          const copyPath = conflictCopyPath(file.localPath, remoteHeadId!);
-          await deps.vault.writeFile(copyPath, merged.remoteBytes);
-          deps.journal.addConflict({
+          await keepOneNote(file.localPath, contentBytes!, merged.remoteBytes, {
             fileId: pending.fileId,
-            otherPath: copyPath,
+            remoteRevisionId: remoteHeadId,
             baseRevisionId: localBase,
-            remoteHeadRevisionId: remoteHeadId,
             origin: "remote_changed",
-            createdAt: now(),
-            resolved: false,
           });
           deps.journal.bumpPendingRetry(pending.operationId);
           await deps.journal.persist();
           return { pushed: 0, skipped: 0, conflicts: 1 };
         }
       } else {
-        // Non-mergeable + remote advanced: stash remote copy, await review.
         const remoteBytes = await fetchRemoteContent(pending.fileId, remoteHeadId!);
-        if (remoteBytes !== null) {
-          const copyPath = conflictCopyPath(file.localPath, remoteHeadId!);
-          await deps.vault.writeFile(copyPath, remoteBytes);
+        if (remoteBytes !== null && contentBytes !== null) {
+          await keepOneNote(file.localPath, contentBytes, remoteBytes, {
+            fileId: pending.fileId,
+            remoteRevisionId: remoteHeadId,
+            baseRevisionId: localBase,
+            origin: "remote_changed",
+          });
         }
-        deps.journal.addConflict({
-          fileId: pending.fileId,
-          otherPath: conflictCopyPath(file.localPath, remoteHeadId!),
-          baseRevisionId: localBase,
-          remoteHeadRevisionId: remoteHeadId,
-          origin: "remote_changed",
-          createdAt: now(),
-          resolved: false,
-        });
         deps.journal.bumpPendingRetry(pending.operationId);
         await deps.journal.persist();
         return { pushed: 0, skipped: 0, conflicts: 1 };
@@ -658,6 +655,24 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       return adoptOwnEcho(event, rev);
     }
     let file = deps.journal.getFile(event.fileId);
+    if (file?.supersededBy && event.eventType !== "tombstone" && !rev.isTombstone) {
+      const survivor = deps.journal.getFile(file.supersededBy);
+      const remoteBytes = await fetchRemoteContent(event.fileId, rev.revisionId);
+      if (survivor && remoteBytes !== null) {
+        const localBytes = await deps.vault.readFile(survivor.localPath).catch(() => null);
+        if (localBytes !== null) {
+          await keepOneNote(survivor.localPath, localBytes, remoteBytes, {
+            fileId: survivor.fileId,
+            remoteRevisionId: rev.revisionId,
+            baseRevisionId: survivor.lastAppliedRevisionId,
+            origin: "remote_changed",
+          });
+        }
+      }
+      deps.journal.foldAway(event.fileId, file.supersededBy, rev.revisionId);
+      await deps.journal.persist();
+      return { pulled: remoteBytes === null ? 0 : 1, conflicts: 0, errors: [] };
+    }
 
     if (!file) {
       if (event.eventType === "tombstone") {
@@ -728,16 +743,26 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       if (remoteBytes === null) {
         return { pulled: 0, conflicts: 0, errors: [`missing remote object for ${rev.revisionId}`], blocked: true };
       }
-      const copyPath = conflictCopyPath(file.localPath, rev.revisionId);
-      await deps.vault.writeFile(copyPath, remoteBytes);
-      deps.journal.addConflict({
+      if (currentBytes === null) {
+        await deps.vault.writeFile(file.localPath, remoteBytes);
+        deps.journal.addConflict({
+          fileId: event.fileId,
+          otherPath: null,
+          baseRevisionId: file.lastAppliedRevisionId,
+          remoteHeadRevisionId: rev.revisionId,
+          origin: "delete_vs_edit",
+          createdAt: now(),
+          resolved: false,
+          remoteText: decodeUtf8(remoteBytes) ?? undefined,
+        });
+        await deps.journal.persist();
+        return { pulled: 0, conflicts: 1, errors: [] };
+      }
+      await keepOneNote(file.localPath, currentBytes, remoteBytes, {
         fileId: event.fileId,
-        otherPath: copyPath,
+        remoteRevisionId: rev.revisionId,
         baseRevisionId: file.lastAppliedRevisionId,
-        remoteHeadRevisionId: rev.revisionId,
         origin: "remote_changed",
-        createdAt: now(),
-        resolved: false,
       });
       await deps.journal.persist();
       return { pulled: 0, conflicts: 1, errors: [] };
@@ -915,6 +940,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     const owner = deps.journal.fileIdForPath(desired);
     if (owner && owner !== fileId) {
       const localHash = await deps.vault.hashFile(desired);
+      const localBytes = localHash === null ? null : await deps.vault.readFile(desired);
       if (localHash !== null && localHash === remoteHash) {
         // The note is already on disk from a fresh scan. Keep the server id
         // instead of writing a second copy beside it.
@@ -927,6 +953,17 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
           deletedLocally: false,
           lastSyncedSize: manifest.sizeBytes,
         });
+        await deps.journal.persist();
+        return;
+      }
+      if (localBytes !== null) {
+        await keepOneNote(desired, localBytes, content, {
+          fileId: owner,
+          remoteRevisionId: rev.revisionId,
+          baseRevisionId: deps.journal.getFile(owner)?.lastAppliedRevisionId ?? null,
+          origin: "remote_changed",
+        });
+        deps.journal.foldAway(fileId, owner, rev.revisionId);
         await deps.journal.persist();
         return;
       }
@@ -944,18 +981,109 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     await deps.journal.persist();
   }
 
-  /** A path already owned by another fileId is never overwritten or retargeted. */
-  function claimPath(fileId: string, desired: string, disambiguator: string): string {
-    const owner = deps.journal.fileIdForPath(desired);
-    if (!owner || owner === fileId) {
-      return desired;
+  /**
+   * Put both versions in the note that already has this path. The file list
+   * keeps one name. Keep mine / Keep theirs rewrite that same note.
+   */
+  async function keepOneNote(
+    path: string,
+    localBytes: Uint8Array,
+    remoteBytes: Uint8Array,
+    meta: {
+      fileId: string;
+      remoteRevisionId: string | null;
+      baseRevisionId: string | null;
+      origin: "remote_changed" | "delete_vs_edit";
+    },
+  ): Promise<void> {
+    if (sameBytes(localBytes, remoteBytes)) {
+      return;
     }
-    const first = conflictCopyPath(desired, disambiguator);
-    const owner2 = deps.journal.fileIdForPath(first);
-    if (!owner2 || owner2 === fileId) {
-      return first;
+    const localText = mergeable(path) ? decodeUtf8(localBytes) : null;
+    const remoteText = mergeable(path) ? decodeUtf8(remoteBytes) : null;
+    if (localText === null || remoteText === null) {
+      deps.journal.addConflict({
+        fileId: meta.fileId,
+        otherPath: null,
+        baseRevisionId: meta.baseRevisionId,
+        remoteHeadRevisionId: meta.remoteRevisionId,
+        origin: meta.origin,
+        createdAt: now(),
+        resolved: false,
+      });
+      return;
     }
-    return conflictCopyPath(desired, `${disambiguator}${randomId(4)}`);
+    const combined = oneDocument(localText, remoteText);
+    if (combined !== localText) {
+      await deps.vault.writeFile(path, new TextEncoder().encode(combined));
+    }
+    const marked = combined !== localText && combined !== remoteText;
+    if (!marked) {
+      return;
+    }
+    deps.journal.addConflict({
+      fileId: meta.fileId,
+      otherPath: null,
+      localText,
+      remoteText,
+      baseRevisionId: meta.baseRevisionId,
+      remoteHeadRevisionId: meta.remoteRevisionId,
+      origin: meta.origin,
+      createdAt: now(),
+      resolved: false,
+    });
+  }
+
+  /** Rename leftover `.vb-conflict-` files back to the note they belong to. */
+  async function foldConflictCopies(): Promise<void> {
+    const listed = await deps.vault.listFiles();
+    for (const meta of listed) {
+      const canonical = canonicalPathFromConflict(meta.path);
+      if (!canonical || canonical === meta.path) {
+        continue;
+      }
+      const extra = await deps.vault.readFile(meta.path).catch(() => null);
+      if (extra === null) {
+        continue;
+      }
+      const canonicalExists = await deps.vault.exists(canonical);
+      if (!canonicalExists) {
+        await deps.vault.writeFile(canonical, extra);
+      } else {
+        const current = await deps.vault.readFile(canonical);
+        if (!sameBytes(current, extra)) {
+          const localText = decodeUtf8(current);
+          const remoteText = decodeUtf8(extra);
+          const combined = localText !== null && remoteText !== null
+            ? new TextEncoder().encode(oneDocument(localText, remoteText))
+            : current;
+          if (!sameBytes(current, combined)) {
+            await deps.vault.writeFile(canonical, combined);
+            const owner = deps.journal.fileIdForPath(canonical);
+            if (owner) {
+              deps.journal.updateFile(owner, { plaintextSha256: null });
+            }
+          }
+        }
+      }
+      await deps.vault.deleteFile(meta.path);
+      const parked = deps.journal.fileIdForPath(meta.path);
+      if (!parked) {
+        continue;
+      }
+      const owner = deps.journal.fileIdForPath(canonical);
+      if (owner && owner !== parked) {
+        deps.journal.foldAway(parked, owner, deps.journal.getFile(parked)?.lastAppliedRevisionId ?? null);
+      } else {
+        deps.journal.updateFile(parked, { localPath: canonical, deletedLocally: false });
+      }
+    }
+  }
+
+  /** One manifest path, one note. A taken path is merged by the caller, never renamed. */
+  function claimPath(fileId: string, desired: string, _disambiguator: string): string {
+    void fileId;
+    return desired;
   }
 
   async function applyRemoteRevision(fileId: string, rev: RevisionMeta, file: FileState): Promise<void> {
@@ -974,6 +1102,21 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       throw new Error("blob object missing on server");
     }
     const desired = normalizeLocalPath(manifest.path);
+    const pathOwner = deps.journal.fileIdForPath(desired);
+    if (pathOwner && pathOwner !== fileId) {
+      const localBytes = await deps.vault.readFile(desired).catch(() => null);
+      if (localBytes !== null) {
+        await keepOneNote(desired, localBytes, content, {
+          fileId: pathOwner,
+          remoteRevisionId: rev.revisionId,
+          baseRevisionId: deps.journal.getFile(pathOwner)?.lastAppliedRevisionId ?? null,
+          origin: "remote_changed",
+        });
+        deps.journal.foldAway(fileId, pathOwner, rev.revisionId);
+        await deps.journal.persist();
+        return;
+      }
+    }
     const safePath = claimPath(fileId, desired, rev.revisionId);
     if (safePath !== file.localPath) {
       // Remote rename onto a free path, or a disambiguated path when the
@@ -1041,6 +1184,16 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       return;
     }
     if (choice === "local") {
+      if (record.origin === "delete_vs_edit") {
+        await safeDeleteLocal(file.localPath);
+        deps.journal.updateFile(fileId, { deletedLocally: true, plaintextSha256: null });
+        deps.journal.resolveConflict(fileId);
+        await deps.journal.persist();
+        return;
+      }
+      if (record.localText !== undefined) {
+        await deps.vault.writeFile(file.localPath, new TextEncoder().encode(record.localText));
+      }
       const pendingId = file.pendingOperationId;
       if (pendingId && deps.journal.raw.pending[pendingId]) {
         deps.journal.raw.pending[pendingId] = {
@@ -1123,6 +1276,57 @@ function mimeOf(path: string): RevisionManifest["contentTypeHint"] {
 
 function mergeable(path: string): boolean {
   return path.endsWith(".md");
+}
+
+export function canonicalPathFromConflict(path: string): string | null {
+  const norm = path.replace(/\\/g, "/");
+  const mark = norm.lastIndexOf(CONFLICT_COPY_MARK);
+  if (mark <= 0) {
+    return null;
+  }
+  try {
+    return normalizeLocalPath(norm.slice(0, mark));
+  } catch {
+    return null;
+  }
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) {
+    return false;
+  }
+  for (let i = 0; i < left.byteLength; i++) {
+    if (left[i] !== right[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function decodeUtf8(bytes: Uint8Array): string | null {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+/** Both edits, one note. A later Keep mine / Keep theirs picks a side. */
+export function oneDocument(local: string, remote: string): string {
+  if (local === remote || local.includes(remote)) {
+    return local;
+  }
+  if (remote.includes(local)) {
+    return remote;
+  }
+  return [
+    "This device",
+    local,
+    "---",
+    "Other device",
+    remote,
+    "",
+  ].join("\n");
 }
 
 export function conflictCopyPath(path: string, revisionId: string): string {

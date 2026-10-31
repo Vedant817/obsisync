@@ -91,8 +91,5 @@ export class DiskVault implements LocalVault {
 
 function excluded(rel: string): boolean {
   const norm = rel.replace(/\\/g, "/");
-  if (norm === ".obsidian" || norm.startsWith(".obsidian/")) {
-    return true;
-  }
-  return norm.includes(".vb-conflict-");
+  return norm === ".obsidian" || norm.startsWith(".obsidian/");
 }

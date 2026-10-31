@@ -2,7 +2,7 @@ import { sha256HexBytes } from "@vaultbridge/crypto";
 import type { LocalFileMeta, LocalVault } from "@vaultbridge/sync-core";
 import { TFile, TFolder, type Vault } from "obsidian";
 
-/** Obsidian vault adapter. `.obsidian` and conflict copies stay local. */
+/** Obsidian vault adapter. `.obsidian` stays local. Conflict names are repaired by the engine. */
 export class ObsidianLocalVault implements LocalVault {
   constructor(private readonly vault: Vault) {}
 
@@ -89,10 +89,7 @@ export class ObsidianLocalVault implements LocalVault {
 
 function excluded(rel: string): boolean {
   const norm = rel.replace(/\\/g, "/");
-  if (norm === ".obsidian" || norm.startsWith(".obsidian/")) {
-    return true;
-  }
-  return norm.includes(".vb-conflict-");
+  return norm === ".obsidian" || norm.startsWith(".obsidian/");
 }
 
 function copyBytes(bytes: Uint8Array): ArrayBuffer {

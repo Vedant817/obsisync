@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2
+
+- A note keeps its real name. Leftover `.vb-conflict-` copies are folded back into that note.
+- When both devices edit the same note, both edits stay in the one note. Keep mine and Keep theirs choose a side.
+
 ## 0.2.1
 
 - A device that already has the same note bytes as the server keeps that note in place. ObsiSync no longer writes a second `.vb-conflict-` copy for identical content.
