@@ -1,0 +1,22 @@
+{
+  "name": "@vaultbridge/worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "VaultBridge sync API: authenticated delta sync with the journal and ciphertext stored in Turso.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -b",
+    "build": "tsc -b && esbuild src/server.ts --bundle --platform=node --format=esm --outfile=dist/server.mjs && esbuild src/vercel-entry.ts --bundle --platform=node --format=esm --outfile=../../api/sync.mjs",
+    "start": "node dist/server.mjs",
+    "test": "echo no-tests"
+  },
+  "dependencies": {
+    "@vaultbridge/protocol": "*",
+    "zod": "^3.24.1"
+  }
+}

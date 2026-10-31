@@ -1,4 +1,31 @@
+# --- build & tooling ---
 node_modules/
+.vercel/
 dist/
+coverage/
+.wrangler/
+.dev.vars
 *.tsbuildinfo
+
+# --- generated plugin artifacts (kept for release CI only) ---
 packages/plugin/main.js
+packages/plugin/*.map
+
+# --- local test logs ---
+.*-out.txt
+
+# --- private / local ---
+.env
+.env.*
+*.local
+apps/worker/.bootstrap-credential
+dev-d1-state/
+
+# --- internal working docs (NOT for GitHub) ---
+Obsidian_Vault_Sync_Master_Specification.md
+TODO*
+todo*
+*-local-notes.md
+
+.vercel
+.env*

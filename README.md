@@ -4,7 +4,7 @@ Sealed Sync keeps an Obsidian vault in sync across your computers and phones. Ea
 
 The hosted API is `https://vaultbridge-three.vercel.app`. A phone on mobile data uses that same address. The computer that created the vault does not have to stay on, and the other device does not have to be on the same Wi-Fi.
 
-Plugin id: `obsisync`. Author: Vedant Mahajan. License: MIT.
+Plugin id: `obsisync`. Display name: Sealed Sync. Author: Vedant Mahajan. License: MIT.
 
 Community page: https://community.obsidian.md/account/plugins/obsisync
 
@@ -65,7 +65,7 @@ A new note on either device shows up on the other while both are open. The statu
 
 Closing Obsidian does not disconnect a device that has already joined. The login is stored in the vault at `.obsidian/plugins/obsisync/data.json`. Opening Obsidian again resumes sync. The pairing code is not used again. A device stays on the vault until you click **Revoke**.
 
-Clearing Obsidian's cache does not remove that file. Deleting the Sealed Sync plugin folder, or `data.json` inside it, removes the login from that device only. The other device stays connected. Sign the device back in with the recovery phrase, then pair it again from a device that is still signed in.
+Clearing Obsidian's cache does not remove that file. Deleting the `obsisync` plugin folder, or `data.json` inside it, removes the login from that device only. The other device stays connected. Sign the device back in with the recovery phrase, then pair it again from a device that is still signed in.
 
 A wrong recovery phrase uses up that pairing code and adds a device that never saved its token. Create another code, then revoke the extra device from **Refresh vault info**.
 
@@ -79,18 +79,34 @@ One request can be about 4.5 MB. A normal note fits. A very large attachment can
 
 ## Repository
 
-Obsidian installs the three files at the root of this repository.
+This repository is the plugin and the sync API.
 
 | Path | What it is |
 | --- | --- |
-| `main.js`, `manifest.json`, `styles.css` | The plugin Obsidian loads. |
+| `packages/plugin` | Obsidian plugin. `manifest.json` is the listing manifest. |
+| `packages/crypto` | AES-256-GCM, HKDF, and the recovery phrase. |
+| `packages/protocol` | Request and response shapes shared by the plugin and the API. |
+| `packages/sync-core` | Scan, reconcile, push, and conflict handling. |
+| `apps/worker` | Node API. Journal and ciphertext are both in Turso. |
+| `api/sync.mjs` | Built Vercel function. Do not edit it by hand. |
+| `public` | Small page for the hosted API. Health is `/v1/health`. |
+| `tests` | Two-device tests against an in-memory server. |
 | `versions.json` | Plugin version to minimum Obsidian version. |
-| `packages/` | Source for encryption, the sync client, and the settings screen. |
-| `.github/workflows/release.yml` | Builds `main.js` on a version tag and attests `main.js` and `styles.css`. |
-| `CHANGELOG.md` | User-visible changes. |
-| `SECURITY.md` | How to report a vulnerability. |
-| `CONTRIBUTING.md` | How to propose a change. |
-| `LICENSE` | MIT. |
+| `Dockerfile` | Optional self-hosted API. |
+| `CHANGELOG.md` | User-visible plugin changes. |
+| `SECURITY.md` | How to report a vulnerability, and what to keep off GitHub. |
+| `CONTRIBUTING.md` | How to run the checks before a pull request. |
+
+```bash
+npm ci
+npm run qa
+npm run build:plugin
+npm run build:worker
+```
+
+`npm run qa` typechecks, runs the tests, and builds. The plugin build writes `packages/plugin/main.js`. That file is gitignored here. A GitHub release of the plugin carries `main.js`, `manifest.json`, and `styles.css` as separate files.
+
+To self-host the API, build the `Dockerfile` and set `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `HOST=0.0.0.0`, and `PORT`. Put that server's HTTPS address in the plugin. Reload Obsidian after the change.
 
 Pairing QR codes use [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) (MIT).
 
@@ -98,9 +114,9 @@ Pairing QR codes use [qrcode-generator](https://github.com/kazuhikoarase/qrcode-
 
 Obsidian no longer accepts a pull request that edits `community-plugins.json`. The directory reads a release from GitHub, then you submit the repo on the website.
 
-1. The default branch has `manifest.json` at the repository root, plus `versions.json`, `README.md`, and `LICENSE`.
+1. The default branch has `manifest.json` at the root of the plugin repository, plus `versions.json`, `README.md`, and `LICENSE`.
 2. `manifest.json` `version` is `x.y.z`. The id is `obsisync`. The description matches the directory listing, is under 250 characters, and ends with a period.
-3. Push a tag whose name is that version, with no `v` prefix. The release workflow builds `main.js`, attests `main.js` and `styles.css`, and publishes the release.
+3. Push a tag on [Vedant817/obsisync](https://github.com/Vedant817/obsisync) whose name is that version, with no `v` prefix. The release workflow builds `main.js`, attests `main.js` and `styles.css`, and publishes the release.
 4. The release files are `main.js`, `manifest.json`, and `styles.css`, each as its own asset.
 5. Sign in at [community.obsidian.md](https://community.obsidian.md) with your Obsidian account and link GitHub.
 6. Open **Plugins**, choose **New plugin**, and enter `https://github.com/Vedant817/obsisync`.
@@ -117,4 +133,4 @@ gh attestation verify styles.css --repo Vedant817/obsisync
 
 The display name is Sealed Sync. Names that start with "Obsi" are rejected. The plugin id stays `obsisync` and cannot contain `obsidian`.
 
-
+This repository is the plugin and the API. Obsidian installs the release from [Vedant817/obsisync](https://github.com/Vedant817/obsisync).

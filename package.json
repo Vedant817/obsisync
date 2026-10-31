@@ -1,23 +1,31 @@
 {
-  "name": "obsisync",
+  "name": "obsi-sync",
+  "version": "0.1.0",
   "private": true,
-  "description": "Sealed Sync Obsidian plugin. The release workflow builds and attests main.js.",
+  "description": "Sealed Sync — end-to-end encrypted Obsidian vault sync. The sync API runs on Node and stores the journal and ciphertext in Turso.",
   "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=20.0.0"
   },
   "workspaces": [
-    "packages/crypto",
-    "packages/protocol",
-    "packages/sync-core",
-    "packages/plugin"
+    "packages/*",
+    "apps/*",
+    "tests"
   ],
   "scripts": {
-    "build": "npm run build -w @vaultbridge/plugin"
+    "typecheck": "tsc -b packages/protocol packages/crypto packages/shared-testkit packages/sync-core apps/worker packages/plugin",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "npm run build -ws --if-present",
+    "build:plugin": "npm run build -w @vaultbridge/plugin",
+    "build:worker": "npm run build -w @vaultbridge/worker",
+    "qa": "npm run typecheck && npm run test && npm run build"
   },
   "devDependencies": {
-    "@types/node": "^22.10.2",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8",
+    "esbuild": "^0.24.2",
+    "@types/node": "^22.10.2"
   }
 }

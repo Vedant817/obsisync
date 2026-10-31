@@ -1,0 +1,7 @@
+{
+  "name": "@vaultbridge/integration-tests",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Two-device integration tests against the worker harness and sync engine."
+}

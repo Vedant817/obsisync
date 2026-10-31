@@ -1,0 +1,22 @@
+{
+  "name": "@vaultbridge/shared-testkit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic test doubles: SQLite-backed SQL database (runs the production schema verbatim), in-memory object store, sync API harness, fault injector.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -b",
+    "build": "tsc -b",
+    "test": "echo no-tests"
+  },
+  "dependencies": {
+    "@vaultbridge/protocol": "*",
+    "@vaultbridge/crypto": "*",
+    "@vaultbridge/worker": "*"
+  }
+}

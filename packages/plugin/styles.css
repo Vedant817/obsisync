@@ -1,0 +1,35 @@
+.obsisync-settings p {
+  margin: 0.4em 0;
+}
+
+.obsisync-settings .obsisync-live {
+  font-weight: 600;
+}
+
+.obsisync-settings .obsisync-secret,
+.obsisync-settings textarea.obsisync-secret {
+  font-family: var(--font-monospace);
+  width: 100%;
+  white-space: pre-wrap;
+}
+
+.obsisync-settings .obsisync-qr {
+  display: inline-block;
+  background: #fff;
+  padding: 8px;
+  border-radius: 8px;
+}
+
+.obsisync-settings .obsisync-url .setting-item-control {
+  flex: 1;
+}
+
+.obsisync-settings .obsisync-url input {
+  width: 100%;
+}
+
+.obsisync-settings .obsisync-qr svg {
+  display: block;
+  width: 220px;
+  height: 220px;
+}

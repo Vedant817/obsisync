@@ -24,7 +24,7 @@ jobs:
       - name: Build plugin
         run: |
           npm ci
-          npm run build
+          npm run build:plugin
           cp packages/plugin/main.js main.js
 
       - name: Attest build provenance
