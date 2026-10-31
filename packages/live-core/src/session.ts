@@ -31,6 +31,9 @@ export const LIVE_RECONCILE = Symbol("live-reconcile");
 
 export const TEXT_FIELD = "content";
 
+/** Sends allowed in flight at once per note. */
+const MAX_IN_FLIGHT = 8;
+
 export interface LiveJoinInput {
   /** Text currently on disk / in the editor. */
   diskText: string;
@@ -85,7 +88,8 @@ export class LiveDocSession {
   private outbox: Uint8Array[] = [];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private awarenessTimer: ReturnType<typeof setTimeout> | null = null;
-  private flushing: Promise<void> | null = null;
+  private readonly inFlight = new Set<Promise<void>>();
+  private snapshotting: Promise<void> | null = null;
   private retryDelayMs = 0;
   private eventsSinceSnapshot = 0;
   private needsSnapshot = false;
@@ -308,69 +312,99 @@ export class LiveDocSession {
     return this.outbox.length;
   }
 
-  /** Send queued edits now. Transient failures keep them queued and retry. */
+  /**
+   * Send queued edits now. Sends overlap (up to MAX_IN_FLIGHT): CRDT updates
+   * merge in any order, so a keystroke never waits for the previous one to be
+   * stored. Resolves once everything queued at call time has been answered;
+   * transient failures stay queued and retry.
+   */
   async flush(): Promise<void> {
-    if (this.flushing) {
-      await this.flushing;
-      if (this.outbox.length === 0) {
-        return;
-      }
-    }
-    if (this.outbox.length === 0 && !this.needsSnapshot) {
-      return;
-    }
-    this.flushing = this.sendOutbox().finally(() => {
-      this.flushing = null;
-    });
-    await this.flushing;
-  }
-
-  private async sendOutbox(): Promise<void> {
     if (this.flushTimer) {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
+    const mine: Promise<void>[] = [];
+    if (this.outbox.length > 0) {
+      while (this.inFlight.size >= MAX_IN_FLIGHT) {
+        await Promise.race([...this.inFlight]).catch(() => undefined);
+      }
+      if (this.outbox.length > 0) {
+        mine.push(this.track(this.sendBatch()));
+      }
+    }
+    if (this.needsSnapshot && !this.snapshotting) {
+      this.snapshotting = this.sendSnapshotGuarded().finally(() => {
+        this.snapshotting = null;
+      });
+      mine.push(this.snapshotting);
+    }
+    const results = await Promise.allSettled([...mine, ...this.inFlight]);
+    const failed = results.slice(0, mine.length).find((r) => r.status === "rejected");
+    if (failed) {
+      throw (failed as PromiseRejectedResult).reason;
+    }
+  }
+
+  private track(p: Promise<void>): Promise<void> {
+    this.inFlight.add(p);
+    const done = () => this.inFlight.delete(p);
+    p.then(done, done);
+    return p;
+  }
+
+  private async sendBatch(): Promise<void> {
     const batch = this.outbox;
     this.outbox = [];
     try {
-      if (batch.length > 0) {
-        const merged = batch.length === 1 ? batch[0]! : Y.mergeUpdates(batch);
-        const payload = await this.opts.cipher.seal(this.docId, "u", merged);
-        if (payload.length > LIVE_LIMITS.maxUpdateChars) {
-          // A paste too big for one update: a snapshot carries it instead.
-          this.needsSnapshot = true;
-        } else {
-          const res = await this.opts.transport.append(this.docId, { kind: "u", payload });
-          this.advancePastOwn(res);
-          this.eventsSinceSnapshot++;
-          if (this.eventsSinceSnapshot >= this.opts.compactAfterEvents && this.outbox.length === 0) {
-            this.needsSnapshot = true;
-          }
-        }
+      const merged = batch.length === 1 ? batch[0]! : Y.mergeUpdates(batch);
+      const payload = await this.opts.cipher.seal(this.docId, "u", merged);
+      if (payload.length > LIVE_LIMITS.maxUpdateChars) {
+        // A paste too big for one update: a snapshot carries it instead.
+        this.needsSnapshot = true;
+        this.scheduleFlush(0);
+        return;
       }
-      if (this.needsSnapshot) {
-        await this.sendSnapshot();
+      const res = await this.opts.transport.append(this.docId, { kind: "u", payload });
+      this.advancePastOwn(res);
+      this.eventsSinceSnapshot++;
+      if (this.eventsSinceSnapshot >= this.opts.compactAfterEvents && !this.needsSnapshot) {
+        this.needsSnapshot = true;
+        this.scheduleFlush(0);
       }
       this.retryDelayMs = 0;
       this.opts.onSendState?.(this, null);
     } catch (err) {
-      if (err instanceof LiveUnavailableError && isPermanent(err)) {
-        // The server will never take this update. Everything is still in the
-        // doc, so a snapshot can carry it.
-        this.needsSnapshot = true;
-        if (err.status === 413) {
-          this.disabledReason = "this note is too large for live editing";
-        }
-        this.opts.onSendState?.(this, err);
-        return;
-      }
-      this.outbox = batch.concat(this.outbox);
-      this.retryDelayMs = Math.min(this.opts.maxRetryDelayMs, Math.max(500, this.retryDelayMs * 2));
-      this.opts.onSendState?.(this, err instanceof Error ? err : new Error("live send failed"));
-      if (!(err instanceof LiveUnavailableError && err.fatal)) {
-        this.scheduleFlush(this.retryDelayMs);
-      }
+      this.onSendFailure(err, batch);
       throw err;
+    }
+  }
+
+  private async sendSnapshotGuarded(): Promise<void> {
+    try {
+      await this.sendSnapshot();
+      this.retryDelayMs = 0;
+    } catch (err) {
+      this.onSendFailure(err, []);
+      throw err;
+    }
+  }
+
+  private onSendFailure(err: unknown, batch: Uint8Array[]): void {
+    if (err instanceof LiveUnavailableError && isPermanent(err)) {
+      // The server will never take this update. Everything is still in the
+      // doc, so a snapshot can carry it.
+      this.needsSnapshot = true;
+      if (err.status === 413) {
+        this.disabledReason = "this note is too large for live editing";
+      }
+      this.opts.onSendState?.(this, err);
+      return;
+    }
+    this.outbox = batch.concat(this.outbox);
+    this.retryDelayMs = Math.min(this.opts.maxRetryDelayMs, Math.max(500, this.retryDelayMs * 2));
+    this.opts.onSendState?.(this, err instanceof Error ? err : new Error("live send failed"));
+    if (!(err instanceof LiveUnavailableError && err.fatal)) {
+      this.scheduleFlush(this.retryDelayMs);
     }
   }
 
@@ -421,7 +455,7 @@ export class LiveDocSession {
   }
 
   private maybeCompact(): void {
-    if (this.eventsSinceSnapshot >= this.opts.compactAfterEvents && this.outbox.length === 0 && !this.flushing) {
+    if (this.eventsSinceSnapshot >= this.opts.compactAfterEvents && !this.snapshotting && !this.needsSnapshot) {
       this.needsSnapshot = true;
       void this.flush().catch(() => undefined);
     }
