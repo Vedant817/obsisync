@@ -6,6 +6,8 @@ The hosted API is `https://vaultbridge-three.vercel.app`. A phone on mobile data
 
 Plugin id: `obsisync`. Author: Vedant Mahajan. License: MIT.
 
+Community page: https://community.obsidian.md/account/plugins/obsisync
+
 An older community plugin named Vaultbridge is a different project. Install this one by the id `obsisync` or the repository `Vedant817/obsisync`.
 
 ## Why Sealed Sync
@@ -32,6 +34,10 @@ Prices and plan limits above are from Obsidian's public Sync page and from commu
 Sealed Sync sends ciphertext and sync metadata to `https://vaultbridge-three.vercel.app`. That server stores them in Turso. File names travel inside the encrypted manifest. The vault key stays on your devices. A recovery phrase unwraps it.
 
 The hosted service is required for devices to see each other's changes, unless you point the plugin at your own server. The plugin does not sell a subscription and it does not add an account login. The pairing QR contains the recovery phrase, so keep that screen private.
+
+## Vault access
+
+Sealed Sync calls `vault.getFiles()` on each sync cycle. That lists every file path in the vault except the `.obsidian` folder. Sync needs the list to notice a note added, edited, or deleted on this device. File names stay inside the encrypted manifest. The plugin does not upload a separate directory of paths.
 
 ## Install
 
@@ -80,6 +86,7 @@ Obsidian installs the three files at the root of this repository.
 | `main.js`, `manifest.json`, `styles.css` | The plugin Obsidian loads. |
 | `versions.json` | Plugin version to minimum Obsidian version. |
 | `packages/` | Source for encryption, the sync client, and the settings screen. |
+| `.github/workflows/release.yml` | Builds `main.js` on a version tag and attests `main.js` and `styles.css`. |
 | `CHANGELOG.md` | User-visible changes. |
 | `SECURITY.md` | How to report a vulnerability. |
 | `CONTRIBUTING.md` | How to propose a change. |
@@ -93,11 +100,20 @@ Obsidian no longer accepts a pull request that edits `community-plugins.json`. T
 
 1. The default branch has `manifest.json` at the repository root, plus `versions.json`, `README.md`, and `LICENSE`.
 2. `manifest.json` `version` is `x.y.z`. The id is `obsisync`. The description matches the directory listing, is under 250 characters, and ends with a period.
-3. Create a GitHub release whose tag and name are that version, with no `v` prefix.
-4. Attach `main.js`, `manifest.json`, and `styles.css` as separate release files.
+3. Push a tag whose name is that version, with no `v` prefix. The release workflow builds `main.js`, attests `main.js` and `styles.css`, and publishes the release.
+4. The release files are `main.js`, `manifest.json`, and `styles.css`, each as its own asset.
 5. Sign in at [community.obsidian.md](https://community.obsidian.md) with your Obsidian account and link GitHub.
 6. Open **Plugins**, choose **New plugin**, and enter `https://github.com/Vedant817/obsisync`.
 7. Agree to the developer policies and submit.
+
+The community page for this plugin is https://community.obsidian.md/account/plugins/obsisync
+
+Verify a downloaded release file:
+
+```bash
+gh attestation verify main.js --repo Vedant817/obsisync
+gh attestation verify styles.css --repo Vedant817/obsisync
+```
 
 The display name is Sealed Sync. Names that start with "Obsi" are rejected. The plugin id stays `obsisync` and cannot contain `obsidian`.
 

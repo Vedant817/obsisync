@@ -1,0 +1,24 @@
+{
+  "name": "@vaultbridge/plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Obsidian plugin that syncs a vault in realtime. The directory name is Sealed Sync.",
+  "type": "module",
+  "main": "./src/main.ts",
+  "types": "./src/main.ts",
+  "scripts": {
+    "typecheck": "tsc -b",
+    "build": "tsc -b --pretty false && node esbuild.config.mjs production"
+  },
+  "dependencies": {
+    "@vaultbridge/crypto": "*",
+    "@vaultbridge/protocol": "*",
+    "@vaultbridge/sync-core": "*",
+    "qrcode-generator": "^1.4.4"
+  },
+  "devDependencies": {
+    "builtin-modules": "^4.0.0",
+    "esbuild": "^0.24.2",
+    "obsidian": "^1.7.2"
+  }
+}

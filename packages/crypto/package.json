@@ -1,0 +1,20 @@
+{
+  "name": "@vaultbridge/crypto",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Client-only cryptography for VaultBridge: Argon2id KDF, AES-256-GCM AEAD envelopes, HKDF domain separation, key wrapping and recovery phrases.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -b",
+    "build": "tsc -b",
+    "test": "echo no-tests"
+  },
+  "dependencies": {
+    "hash-wasm": "^4.12.0"
+  }
+}

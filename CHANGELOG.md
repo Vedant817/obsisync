@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.4
+
+- GitHub Actions builds the release and attests `main.js` and `styles.css`.
+- The readme states that sync lists every vault file outside `.obsidian`.
+
 ## 0.2.3
 
 - The directory name is Sealed Sync. The plugin id stays `obsisync`.

@@ -1,0 +1,23 @@
+{
+  "name": "obsisync",
+  "private": true,
+  "description": "Sealed Sync Obsidian plugin. The release workflow builds and attests main.js.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "workspaces": [
+    "packages/crypto",
+    "packages/protocol",
+    "packages/sync-core",
+    "packages/plugin"
+  ],
+  "scripts": {
+    "build": "npm run build -w @vaultbridge/plugin"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.6.3"
+  }
+}

@@ -2,7 +2,11 @@ import { sha256HexBytes } from "@vaultbridge/crypto";
 import type { LocalFileMeta, LocalVault } from "@vaultbridge/sync-core";
 import { TFile, TFolder, type Vault } from "obsidian";
 
-/** Obsidian vault adapter. `.obsidian` stays local. Conflict names are repaired by the engine. */
+/**
+ * Obsidian vault adapter.
+ * `getFiles()` lists every path except `.obsidian` so sync can see adds, edits, and deletes.
+ * Conflict names are repaired by the engine.
+ */
 export class ObsidianLocalVault implements LocalVault {
   constructor(private readonly vault: Vault) {}
 

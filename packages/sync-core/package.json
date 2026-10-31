@@ -1,0 +1,20 @@
+{
+  "name": "@vaultbridge/sync-core",
+  "version": "0.1.0",
+  "description": "VaultBridge device-side sync engine: scanner, durable journal, conflict planner, diff3 merge, no-op-safe cycles. Platform-agnostic (vault + transport injected).",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -b",
+    "build": "tsc -b",
+    "test": "echo no-tests"
+  },
+  "dependencies": {
+    "@vaultbridge/protocol": "*",
+    "@vaultbridge/crypto": "*"
+  }
+}
