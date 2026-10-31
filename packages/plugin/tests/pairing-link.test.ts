@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { pairingLink, pairingQrSvg, parsePairingLink } from "../src/pairing-link.js";
 
 const payload = {
-  serverUrl: "https://vaultbridge-three.vercel.app",
+  serverUrl: "https://obsisync-api.mediclarity-voice-agent.workers.dev",
   inviteId: "inv-1",
   pairingCode: "code-2",
   recoveryPhrase: "vbrk1examplephrasevalue",

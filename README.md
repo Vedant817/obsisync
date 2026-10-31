@@ -1,151 +1,232 @@
 # Sealed Sync
 
-Sealed Sync keeps an Obsidian vault in sync across your computers and phones. A note open on two devices updates as you type, like a shared document, with each device's cursor shown. Each keystroke and each note is encrypted on the device before it is uploaded. Sync runs on its own. There is no Sync button.
+**Live, end-to-end encrypted sync for Obsidian.** Open the same note on your laptop and your phone and type on either one. Every keystroke shows up on the other device as you type, with its cursor, and the server only ever sees ciphertext.
 
-The hosted API is `https://obsisync-api.mediclarity-voice-agent.workers.dev`, on Cloudflare Workers. A phone on mobile data uses that same address. Devices set to the earlier address move to this one on their own. The computer that created the vault does not have to stay on, and the other device does not have to be on the same Wi-Fi.
+[![Release](https://img.shields.io/github/v/release/Vedant817/obsisync?label=release)](https://github.com/Vedant817/obsisync/releases/latest)
+[![CI](https://github.com/Vedant817/obsisync/actions/workflows/ci.yml/badge.svg)](https://github.com/Vedant817/obsisync/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Vedant817/obsisync/blob/main/LICENSE)
+![Desktop and mobile](https://img.shields.io/badge/works%20on-desktop%20%C2%B7%20iOS%20%C2%B7%20Android-7c3aed)
 
-Plugin id: `obsisync`. Display name: Sealed Sync. Author: Vedant Mahajan. License: MIT.
+- **Google Docs-style live editing.** Edits merge letter by letter through a CRDT, so typing on two devices at once never overwrites either one. Each device's cursor and selection are shown, labelled with its name.
+- **Encrypted before it leaves the device.** Notes, keystrokes, cursors, and file names are sealed with AES-256-GCM on your device. The vault key never leaves your devices.
+- **Automatic.** There is no Sync button. Open notes update as you type, and every other file in the vault follows within moments.
+- **Pair a phone by scanning a QR code.** No account, no Tailscale, no copying `main.js` around, and no need to be on the same Wi-Fi.
+- **Safe by default.** A file deleted on another device goes to your trash, not into the void. If one device edits a note that another deletes, both are kept and you choose.
 
-Community page: https://community.obsidian.md/account/plugins/obsisync
+Plugin id `obsisync` · Display name **Sealed Sync** · [Community page](https://community.obsidian.md/plugins/obsisync) · Needs Obsidian 1.6.6 or later
 
-An older community plugin named Vaultbridge is a different project. Install this one by the id `obsisync` or the repository `Vedant817/obsisync`.
+> An older community plugin named Vaultbridge is a different project. Install this one by the id `obsisync` or the repository `Vedant817/obsisync`.
 
-## Why Sealed Sync
+## Contents
 
-People usually pick one of four ways to sync a vault. Each one is good at something Sealed Sync does not try to replace.
+- [Quick start](#quick-start)
+- [Live editing](#live-editing)
+- [How the encryption works](#how-the-encryption-works)
+- [How it compares](#how-it-compares)
+- [Settings](#settings)
+- [Status bar](#status-bar)
+- [Devices, recovery, and conflicts](#devices-recovery-and-conflicts)
+- [Limits](#limits)
+- [Network and privacy](#network-and-privacy)
+- [Self-hosting](#self-hosting)
+- [Development](#development)
 
-| | Sealed Sync | Obsidian Sync | Self-hosted LiveSync | Remotely Save | Syncthing |
-| --- | --- | --- | --- | --- | --- |
-| What you pay | Plugin is free. The hosted API above is the one this project runs. | Paid. Standard is $4 per month billed annually, or $5 month to month. Plus is $8 or $10. | Plugin is free. You run CouchDB, object storage, or a peer relay. | Plugin is free. You bring Dropbox, S3, WebDAV, or similar. | Free. Devices talk to each other. |
-| Encryption | On by default. AES-256-GCM on the device. The server stores ciphertext. | On by default. AES-256-GCM. Some sync metadata is not end-to-end encrypted. | On when you enable it. You operate the server. | Optional. Blank password means the bucket holds plain notes. | The files never sit on a sync vendor's server. |
-| Typing on two devices at once | Merged letter by letter, live, with the other device's cursor shown. | Merged when the file syncs. No live cursors. | The file syncs in near real time. No live cursors. | Conflicts at sync time. | Conflict copies. |
-| How sync starts | Automatic. Open notes update as you type. Other notes sync about once a second on desktop, about every five seconds on mobile. | Automatic, in the official app. | Near real time once the server is configured. | On a schedule, or when you run it. | Continuous, while both devices are online together. |
-| A new phone | Install the plugin, then scan a QR or type three values. | Sign in to your Obsidian account. | Install the plugin, then connect it to your server. | Install the plugin, then connect your storage account. | Pair the devices on the network. There is no official iOS app. |
-| Setup you avoid | No Tailscale, no copying `main.js` onto the phone, no second sync button. | No server to run. | No hosted account. | You reuse storage you already pay for. | No account and no central copy. |
-| Where this one stops | A single attachment is limited to 25 MB. Version history is per note on the server, not the official history viewer. | Vault count, storage, and file size follow the plan. Standard's max file size is 5 MB. | You patch, back up, and secure the server. | Conflicts are easier to hit because sync is not continuous. | Both devices must be reachable. iOS needs a third-party app. |
+## Quick start
 
-Use Sealed Sync when you want encrypted realtime sync without running a database and without an Obsidian Sync subscription. Use Obsidian Sync when you want the official app, version history, and support. Use LiveSync or Remotely Save when you want the ciphertext in an account you already control. Use Syncthing when every device can see the others and you do not want a server at all.
+### 1. Install
 
-Official Obsidian Sync can stay installed. Turn one of them off. Two sync tools will overwrite each other.
+**From Obsidian:** Settings → Community plugins → Browse, search for **Sealed Sync**, then install and enable it.
 
-Prices and plan limits above are from Obsidian's public Sync page and from community write-ups checked in 2026. Recheck [obsidian.md/sync](https://obsidian.md/sync) before you compare a bill.
+**Newest build, with BRAT:** install **BRAT** from Community plugins, choose **Add beta plugin**, enter `Vedant817/obsisync`, then enable **Sealed Sync**. BRAT installs from the [latest GitHub release](https://github.com/Vedant817/obsisync/releases/latest).
+
+The server address is already filled in. You don't need an account.
+
+### 2. Create a vault on your first device
+
+Open **Settings → Sealed Sync → Or start a new vault**, paste a one-time **setup token**, and click **Create vault on this device**. Then write down the **recovery phrase** it shows. That phrase is the only way to unlock the vault's key.
+
+The server hands out setup tokens so that strangers can't fill it with vaults. For the hosted server, ask the maintainer by [opening an issue](https://github.com/Vedant817/obsisync/issues). On your own server, you make the token yourself (see [Self-hosting](#self-hosting)).
+
+### 3. Add your other devices
+
+Install Sealed Sync on the other device. On the first device, click **Create a pairing code**. The code works once and expires after ten minutes. Then connect the other device either way:
+
+- **Scan.** Point the other device's camera at the QR code. Obsidian opens and joins on its own.
+- **Type.** Enter the invite ID, pairing code, and recovery phrase under **Or type the codes**, then click **Join vault**. If your camera copies the link instead of opening Obsidian, paste it into **Pairing link** and click **Join from link**.
+
+That's it. The status bar reads `Sealed Sync live`, and **Live editing** in settings says *Connected over WebSocket*.
 
 ## Live editing
 
-Open the same note on two devices and type on either one. The other device shows the edit within about a second, without reloading the note and without moving your cursor. Edits made on both devices at the same moment are merged letter by letter. Neither one replaces the other.
+Open the same note on two devices and type. The other device usually shows the change in a fraction of a second, without reloading the note and without moving your cursor.
 
-- **Cursors.** Each device's cursor and selection appear in the other device's editor, in a colour per device, labelled with the device name. Set the name under **Live editing** in settings. The status bar shows how many other devices are editing.
-- **Encrypted.** Each change and each cursor position is sealed with AES-256-GCM on the device, under a key derived from the vault key. The server keeps an ordered log of sealed changes per note, and an id it cannot turn back into a note name.
-- **Offline.** Edits made while offline are sent when the device reconnects and merge with whatever changed in the meantime. A note changed while it was closed, for example by another app or a template, is folded into the live note the next time it opens.
-- **Scope.** Markdown and text notes under 1 MB are edited live. Attachments, canvases, and notes that are not open sync as whole files, as before.
+| | |
+| --- | --- |
+| **Merging** | Edits are applied through [Yjs](https://github.com/yjs/yjs), a CRDT. Simultaneous typing at the same spot keeps both edits; neither device wins. |
+| **Cursors** | Each device's cursor and selection appear in its own colour, labelled with the name set under **Device name**. The status bar shows how many other devices are in the note. |
+| **Offline** | Edits made offline are sent when the device reconnects, and merge with whatever changed in the meantime. |
+| **Edits from outside the editor** | When another app, a template, or a script changes a note while it is closed, the change is folded into the live note the next time it opens. |
+| **Split panes** | One pane per note is bound to the live session, so a note open twice on the same device is never applied twice. |
+| **What is live** | Markdown and text notes under 1 MB that are open in an editor. Attachments, canvases, and closed notes sync as whole files. |
 
-Turn live editing off under **Live editing** in settings to sync open notes as whole files only.
+Turn off **Edit open notes live** to sync open notes as whole files only.
 
-## Network
+## How the encryption works
 
-Sealed Sync sends ciphertext and sync metadata to `https://obsisync-api.mediclarity-voice-agent.workers.dev`. That server stores them in Turso. While Obsidian is open, the plugin keeps one WebSocket open to that server. Live edits, cursors, and a short "another device saved a file" notice arrive over it. If the WebSocket cannot connect, the plugin falls back to polling over HTTPS. File names travel inside the encrypted manifest. The vault key stays on your devices. A recovery phrase unwraps it.
+```
+ Your laptop                                                Your phone
+ ┌──────────────────────────┐                ┌──────────────────────────┐
+ │ editor → CRDT update     │                │ CRDT update → editor     │
+ │ seal: AES-256-GCM        │                │ open: AES-256-GCM        │
+ └────────────┬─────────────┘                └─────────────▲────────────┘
+              │ ciphertext over a WebSocket                │ relayed at once
+              ▼                                            │
+ ┌─────────────────────────────────────────────────────────┴────────────┐
+ │ Sync API (Cloudflare Workers, one live room per vault)                │
+ │ relays the sealed bytes first, then appends them to an ordered log   │
+ │ in Turso. It holds no key, so it can't read what it stores.          │
+ └──────────────────────────────────────────────────────────────────────┘
+```
 
-The hosted service is required for devices to see each other's changes, unless you point the plugin at your own server. The plugin does not sell a subscription and it does not add an account login. The pairing QR contains the recovery phrase, so keep that screen private.
+- A random **vault key** is created on your first device. It is stored only wrapped: once by a device secret, and once by your recovery phrase.
+- Separate keys for file contents, the file manifest, and live editing are derived from the vault key with HKDF. Each sealed message carries its vault and file or note as authenticated data, so the server can't move ciphertext between notes undetected.
+- Live notes are addressed by an id derived from the note's path with a keyed HKDF. The server can't turn it back into a name.
+- Pairing hands the new device the wrapped key and the recovery phrase that opens it. The server never sees the unwrapped key.
 
-## Vault access
+| The server can see | The server can't see |
+| --- | --- |
+| That a vault exists, its device ids, and when they connect | Note contents, keystrokes, or attachments |
+| Opaque note ids, ciphertext sizes, and timing | Note names, folder names, or paths |
+| How many devices are editing a note | Cursor positions or device names |
 
-Sealed Sync calls `vault.getFiles()` on each sync cycle. That lists every file path in the vault except the `.obsidian` folder. Sync needs the list to notice a note added, edited, or deleted on this device. File names stay inside the encrypted manifest. The plugin does not upload a separate directory of paths.
+## How it compares
 
-## Install
+| | Sealed Sync | Obsidian Sync | Relay | Self-hosted LiveSync | Remotely Save | Syncthing |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Price** | Free plugin and hosted server | Standard $4/mo billed yearly ($5 monthly); Plus $8 ($10) | Free for up to 3 users, with no cloud storage for attachments; Hobby $5/mo | Free; you run CouchDB or a relay | Free; you bring S3, Dropbox, WebDAV… | Free |
+| **End-to-end encryption** | Always on | On by default; some sync metadata isn't end-to-end encrypted | Not described as end-to-end; private if you self-host on a private network | When you enable it | Optional | No server copy to protect |
+| **Typing on two devices at once** | Merged live, with cursors | Merged when the file syncs | Merged live, with cursors | Near real time, no cursors | Conflicts at sync time | Conflict copies |
+| **New phone** | Scan a QR code | Sign in | Sign in, join a shared folder | Connect to your server | Connect your storage | Pair on the network; no official iOS app |
+| **Built for** | One person's devices | One person's devices | Teams sharing folders | One person's devices | One person's devices | Devices online together |
+| **Where it stops** | 25 MB per attachment; no version-history viewer | Storage and file size follow the plan | Attachments need a paid plan | You patch and back up the server | Sync isn't continuous | Both devices must be reachable |
 
-Until the community directory lists this plugin, install it with BRAT:
+**Pick Sealed Sync** for encrypted, live sync across your own devices without running a server or paying a subscription. **Pick Obsidian Sync** for the official app, version history, and support. **Pick Relay** to edit live with other people. **Pick LiveSync or Remotely Save** to keep the ciphertext in storage you already control. **Pick Syncthing** when every device can reach the others and you want no server at all.
 
-1. Settings → Community plugins. Turn Restricted mode off.
-2. Browse, search for **BRAT**, install it, and enable it.
-3. Open BRAT settings and choose **Add beta plugin**.
-4. Enter `Vedant817/obsisync`.
-5. Enable **Sealed Sync**.
-6. Open Sealed Sync settings. The server address is already filled in.
+Run only one sync tool on a vault. Sealed Sync warns you when Obsidian Sync is also on, because two sync tools overwrite each other.
 
-After the directory listing is approved, search for **Sealed Sync** and install it from Community plugins. Reload Obsidian after you change the API address.
+<sub>Prices and features of other tools are from their public pages, checked in 2026 (Relay in November 2026). Recheck them before you compare a bill.</sub>
 
-## Add another device
+## Settings
 
-Install Sealed Sync on the other device first. On the device that already has the notes, open Sealed Sync settings and click **Create a pairing code**. The code works once and expires in ten minutes.
+| Setting | What it does |
+| --- | --- |
+| **API address** | The sync server. Set to the hosted server by default. Reload Obsidian after you change it. |
+| **Recovery phrase** | Unlocks the vault on this device. Also included in the pairing QR code. |
+| **Create a pairing code** | Makes a one-time code and QR code, valid for ten minutes, to add another device. |
+| **Pause sync** | Holds uploads and downloads until you turn it off. |
+| **Edit open notes live** | Live editing with cursors. When off, open notes sync as whole files. |
+| **Device name** | The label on your cursor in other devices' editors. Sent encrypted. |
+| **Conflicts** | Notes edited on one device and deleted on another. Choose **Keep mine** or **Keep theirs**. |
+| **Refresh vault info** | Shows device count and storage, and lets you **Revoke** a lost device. |
 
-Connect the other device in either way:
+## Status bar
 
-- **Scan.** Leave the QR on the screen. Open the camera on the other device and point it at the code. Obsidian opens and joins.
-- **Type the codes.** Copy the invite ID, the pairing code, and the recovery phrase. On the other device, enter them under **Or type the codes** and click **Join vault**. If the camera copies the link instead of opening Obsidian, paste it into **Pairing link** and click **Join from link**.
+| Text | Meaning |
+| --- | --- |
+| `Sealed Sync live` | Connected and up to date. |
+| `… · starting` | The plugin is loading. |
+| `… · syncing` | Files are uploading or downloading. |
+| `… · retrying` | A file didn't go through. Sync tries again on its own; the reason is under **Sealed Sync** settings. |
+| `… · offline` | The server can't be reached. Changes wait on the device and go out when it reconnects. |
+| `… · conflict` | A note needs you to choose a version. Open settings → **Conflicts**. |
+| `… · paused` | **Pause sync** is on, or a file is over the 25 MB limit. |
+| `… · locked` | This device is signed in but needs the recovery phrase. |
+| `… · set up` | This device hasn't joined a vault yet. |
 
-A new note on either device shows up on the other while both are open. The status bar reads `Sealed Sync live`.
+## Devices, recovery, and conflicts
 
-Closing Obsidian does not disconnect a device that has already joined. The login is stored in the vault at `.obsidian/plugins/obsisync/data.json`. Opening Obsidian again resumes sync. The pairing code is not used again. A device stays on the vault until you click **Revoke**.
-
-Clearing Obsidian's cache does not remove that file. Deleting the `obsisync` plugin folder, or `data.json` inside it, removes the login from that device only. The other device stays connected. Sign the device back in with the recovery phrase, then pair it again from a device that is still signed in.
-
-A wrong recovery phrase uses up that pairing code and adds a device that never saved its token. Create another code, then revoke the extra device from **Refresh vault info**.
-
-If the same note is open on both devices, edits merge live as you type. If it was edited on both devices while it was closed on one of them, the edit made in that note's editor is folded into the live note when it opens. Otherwise the later edit replaces the note. The file name does not change, and an identical note is not saved a second time.
-
-**Pause sync** holds uploads and downloads until you turn it off. Leave it off for normal use.
+- **Closing Obsidian doesn't sign a device out.** Its login lives in the plugin's `data.json`, inside your vault's configuration folder. Opening Obsidian again picks up where it left off.
+- **Lost a device?** Open **Refresh vault info** on another device and click **Revoke**. The lost device can no longer sync.
+- **Deleted the plugin folder or `data.json`?** That device is signed out. Pair it again from a device that is still signed in.
+- **Wrong recovery phrase while joining?** That pairing code is used up. Create a new one, then revoke the extra device from **Refresh vault info**.
+- **Keep the recovery phrase safe, and keep one device signed in.** The phrase unlocks the key, and a signed-in device is needed to pair new ones. Nobody, including the server, can recover a vault without them.
+- **Deleted files** go to the trash you chose under Obsidian's *Files and links → Deleted files*, so a delete from another device can be undone. Obsidian's `.trash` folder is never synced.
+- **Conflicts.** A note open on both devices merges live, keystroke by keystroke. A note changed on disk while it was closed is merged into the live note when it opens. For files that aren't open, the newer edit wins. A note edited on one device and deleted on another is kept, and you choose under **Conflicts**. A file is never renamed, and an identical file is never saved twice.
 
 ## Limits
 
-A single attachment can be up to 25 MB. Notes over 1 MB, and files that are not Markdown or text, sync as whole files instead of live.
-
-## Repository
-
-This repository is the plugin and the sync API.
-
-| Path | What it is |
+| | |
 | --- | --- |
-| `packages/plugin` | Obsidian plugin. `manifest.json` is the listing manifest. |
-| `packages/crypto` | AES-256-GCM, HKDF, and the recovery phrase. |
-| `packages/protocol` | Request and response shapes shared by the plugin and the API. |
-| `packages/sync-core` | Scan, reconcile, push, and conflict handling. |
-| `packages/live-core` | Live editing: the CRDT document, sealing, and the poll loop. |
-| `apps/worker` | Node API. Journal and ciphertext are both in Turso. |
-| `apps/worker/wrangler.toml` | Cloudflare Worker and the live-room Durable Object. Pushing to `main` deploys it. |
-| `public` | Small page for the hosted API. Health is `/v1/health`. |
-| `tests` | Two-device tests against an in-memory server. |
-| `versions.json` | Plugin version to minimum Obsidian version. |
-| `Dockerfile` | Optional self-hosted API. |
-| `CHANGELOG.md` | User-visible plugin changes. |
-| `SECURITY.md` | How to report a vulnerability, and what to keep off GitHub. |
-| `CONTRIBUTING.md` | How to run the checks before a pull request. |
+| Attachment size | 25 MB per file |
+| Live editing | Markdown and text notes up to 1 MB |
+| File sync while connected | Instant on change, with a safety check every 30 seconds |
+| File sync without the WebSocket | About every second on desktop, every 5 seconds on mobile |
+| Excluded from sync | The vault's configuration folder (usually `.obsidian`) and `.trash` |
+
+## Network and privacy
+
+Sealed Sync talks to one server, `https://obsisync-api.mediclarity-voice-agent.workers.dev`, unless you point it at your own. While Obsidian is open, it keeps one WebSocket open for live edits, cursors, and a short "a device saved a file" notice. If the WebSocket can't connect, it falls back to HTTPS polling.
+
+The server stores ciphertext and sync metadata in [Turso](https://turso.tech). File names travel inside the encrypted manifest. There are no analytics, no ads, and no telemetry, and the plugin doesn't add an account login or sell a subscription.
+
+**Vault access.** On each sync cycle, the plugin calls `vault.getFiles()` to list every file except the configuration folder and `.trash`. That's how it notices a note added, edited, or deleted on this device. The list never leaves the device unencrypted.
+
+The pairing QR code contains the recovery phrase, so keep that screen private.
+
+## Self-hosting
+
+Either way below, you need a [Turso](https://turso.tech) database. Put its `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` in `apps/worker/.env`, then set up the tables and make your first setup token:
 
 ```bash
 npm ci
-npm run qa
-npm run build:plugin
-npm run build:worker
+npm run migrate -w @vaultbridge/worker
 ```
 
-`npm run qa` typechecks, runs the tests, and builds. The plugin build writes `packages/plugin/main.js`. That file is gitignored here. A GitHub release of the plugin carries `main.js`, `manifest.json`, and `styles.css` as separate files.
+This writes a one-time setup token to `apps/worker/.bootstrap-credential`. Paste it into **Or start a new vault** on your first device.
 
-The hosted API deploys from `.github/workflows/deploy-api.yml` on every push to `main` that changes it. The workflow needs the `CLOUDFLARE_API_TOKEN` repository secret. The Worker needs `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` as Worker secrets.
+**Cloudflare Workers (recommended, includes live WebSockets).** In `apps/worker/wrangler.toml`, change `name` and `account_id` to your own, then:
 
-To self-host the API, build the `Dockerfile` and set `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `HOST=0.0.0.0`, and `PORT`. Put that server's HTTPS address in the plugin. Reload Obsidian after the change. The Node server has no WebSocket room, so live editing there runs over HTTPS polling.
+```bash
+cd apps/worker
+npx wrangler secret put TURSO_DATABASE_URL
+npx wrangler secret put TURSO_AUTH_TOKEN
+npx wrangler deploy
+```
 
-Pairing QR codes use [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) (MIT).
+**Docker (Node).** Build the `Dockerfile`, then run it with `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `HOST=0.0.0.0`, and `PORT`. The Node server has no WebSocket room, so live editing runs over HTTPS polling and is slower.
 
-## Publish to the community directory
+Put your server's HTTPS address in **API address** on every device, then reload Obsidian. `GET /v1/health` reports whether the server is up.
 
-Obsidian no longer accepts a pull request that edits `community-plugins.json`. The directory reads a release from GitHub, then you submit the repo on the website.
+## Development
 
-1. The default branch has `manifest.json` at the root of the plugin repository, plus `versions.json`, `README.md`, and `LICENSE`.
-2. `manifest.json` `version` is `x.y.z`. The id is `obsisync`. The description matches the directory listing, is under 250 characters, and ends with a period.
-3. Push a tag on [Vedant817/obsisync](https://github.com/Vedant817/obsisync) whose name is that version, with no `v` prefix. The release workflow builds `main.js`, attests `main.js` and `styles.css`, and publishes the release.
-4. The release files are `main.js`, `manifest.json`, and `styles.css`, each as its own asset.
-5. Sign in at [community.obsidian.md](https://community.obsidian.md) with your Obsidian account and link GitHub.
-6. Open **Plugins**, choose **New plugin**, and enter `https://github.com/Vedant817/obsisync`.
-7. Agree to the developer policies and submit.
+```bash
+npm ci
+npm run qa       # typecheck, test, and build everything
+npm run build:plugin   # writes packages/plugin/main.js
+```
 
-The community page for this plugin is https://community.obsidian.md/account/plugins/obsisync
+| Path | What it is |
+| --- | --- |
+| `packages/plugin` | The Obsidian plugin: settings, the vault adapter, and the CodeMirror live-editing binding |
+| `packages/live-core` | Live editing: Yjs documents, sealing, the WebSocket transport, and the offline queue |
+| `packages/sync-core` | File sync: scan, reconcile, push, pull, and conflict handling |
+| `packages/crypto` | AES-256-GCM, HKDF key derivation, and the recovery phrase |
+| `packages/protocol` | Request, response, and WebSocket message shapes shared by the plugin and server |
+| `apps/worker` | The sync API: a Cloudflare Worker with one Durable Object per vault, plus a Node server for Docker |
+| `tests` | Multi-device tests against an in-memory server, including live editing over fake sockets |
 
-Verify a downloaded release file:
+Releases are built by GitHub Actions. Pushing a tag such as `0.3.2` builds `main.js`, attests it, and publishes `main.js`, `manifest.json`, and `styles.css` as separate assets. To verify a download:
 
 ```bash
 gh attestation verify main.js --repo Vedant817/obsisync
-gh attestation verify styles.css --repo Vedant817/obsisync
 ```
 
-The display name is Sealed Sync. Names that start with "Obsi" are rejected. The plugin id stays `obsisync` and cannot contain `obsidian`.
+Every push to `main` that touches the server redeploys the hosted API.
 
-This repository is the plugin and the API. Obsidian installs the release from [Vedant817/obsisync](https://github.com/Vedant817/obsisync).
+See [CONTRIBUTING.md](https://github.com/Vedant817/obsisync/blob/main/CONTRIBUTING.md) before opening a pull request. To report a vulnerability, follow [SECURITY.md](https://github.com/Vedant817/obsisync/blob/main/SECURITY.md); please don't open a public issue.
+
+Pairing QR codes use [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) (MIT). Live editing uses [Yjs](https://github.com/yjs/yjs) and [y-codemirror.next](https://github.com/yjs/y-codemirror.next) (MIT).
+
+## License
+
+[MIT](https://github.com/Vedant817/obsisync/blob/main/LICENSE) © Vedant Mahajan

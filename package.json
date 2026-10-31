@@ -2,7 +2,7 @@
   "name": "obsi-sync",
   "version": "0.1.0",
   "private": true,
-  "description": "Sealed Sync — end-to-end encrypted Obsidian vault sync. The sync API runs on Node and stores the journal and ciphertext in Turso.",
+  "description": "Sealed Sync — end-to-end encrypted Obsidian vault sync. The sync API runs on Cloudflare Workers and stores ciphertext in Turso.",
   "license": "MIT",
   "type": "module",
   "engines": {

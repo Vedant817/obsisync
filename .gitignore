@@ -9,6 +9,7 @@ coverage/
 
 # --- generated plugin artifacts (kept for release CI only) ---
 packages/plugin/main.js
+/main.js
 packages/plugin/*.map
 
 # --- local test logs ---
@@ -26,6 +27,3 @@ Obsidian_Vault_Sync_Master_Specification.md
 TODO*
 todo*
 *-local-notes.md
-
-.vercel
-.env*

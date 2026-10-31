@@ -13,6 +13,7 @@
     "typecheck": "tsc -b",
     "build": "tsc -b && esbuild src/server.ts --bundle --platform=node --format=esm --outfile=dist/server.mjs",
     "start": "node dist/server.mjs",
+    "migrate": "esbuild src/apply-migrations.ts --bundle --platform=node --format=esm --outfile=dist/apply-migrations.mjs && node dist/apply-migrations.mjs",
     "test": "echo no-tests"
   },
   "dependencies": {
