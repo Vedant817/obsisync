@@ -103,6 +103,16 @@ export type LiveServerMessage =
   | ({ t: "page" } & LiveDocDelta)
   /** Someone appended. Advance the cursor to `event.seq` only if `event.prev` <= cursor. */
   | { t: "push"; docId: string; event: LiveEventWire & { prev: number } }
+  /**
+   * Typing relayed before it is stored, so it arrives without waiting on the
+   * database. Apply it; do not move the cursor. A `commit` follows.
+   */
+  | { t: "relay"; docId: string; rid: string; event: Omit<LiveEventWire, "seq"> }
+  /**
+   * The relayed event `rid` was stored as `seq`. Same cursor rule as `push`,
+   * and only for a relay this socket actually received; otherwise re-read.
+   */
+  | { t: "commit"; docId: string; rid: string; seq: number; prev: number }
   | { t: "aw"; docId: string; entries: LiveAwarenessWire[] }
   | ({ t: "ack"; id: number } & LiveAppendResponse)
   | { t: "nack"; id: number; status: number; code: string; message: string }

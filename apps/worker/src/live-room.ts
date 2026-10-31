@@ -165,11 +165,27 @@ export class LiveRoomCore {
     msg: Extract<LiveClientMessage, { t: "append" }>,
   ): Promise<void> {
     const { t: _t, id, docId, ...request } = msg;
+    // Plain typing cannot be rejected for content, so relay it before the
+    // database round trips. Conditional appends and snapshots wait: the
+    // server may refuse them.
+    const relayFirst =
+      request.kind === "u" &&
+      request.ifHead === undefined &&
+      request.payload.length > 0 &&
+      request.payload.length <= LIVE_LIMITS.maxUpdateChars;
+    const rid = `${deviceId}:${id}`;
+    if (relayFirst) {
+      this.broadcast(docId, { t: "relay", docId, rid, event: { kind: "u", deviceId, payload: request.payload } }, ws);
+    }
     const result = await liveAppend(this.db, this.vaultId, deviceId, docId, request);
     const { event, ...wire } = result;
     this.send(ws, { t: "ack", id, ...wire });
     if (event) {
-      this.pushEvent(docId, event, ws);
+      if (relayFirst) {
+        this.broadcast(docId, { t: "commit", docId, rid, seq: event.seq, prev: event.prev }, ws);
+      } else {
+        this.pushEvent(docId, event, ws);
+      }
     }
   }
 

@@ -301,7 +301,7 @@ describe("live editing over WebSockets", () => {
       const docB = await hubB.open(PATH, { diskText: "" });
       let dropped = 0;
       room.dropFrame = (text) => {
-        if (dropped === 0 && text.includes('"t":"push"')) {
+        if (dropped === 0 && text.includes('"t":"relay"')) {
           dropped++;
           return true;
         }

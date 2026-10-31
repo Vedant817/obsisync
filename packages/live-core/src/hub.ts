@@ -97,6 +97,22 @@ export class LiveHub {
         onDown: () => this.kick(),
         onPage: (delta) => this.enqueue(() => this.applyPage(delta)),
         onPush: (docId, event) => this.enqueue(() => this.applyPush(docId, event)),
+        onRelay: (docId, rid, event) =>
+          this.enqueue(async () => {
+            const session = this.sessions.get(docId);
+            if (!session) {
+              return;
+            }
+            await session.applyDelta({
+              docId,
+              events: [{ ...event, seq: 0 }],
+              cursor: session.cursor,
+              hasMore: false,
+              awareness: [],
+            });
+            this.relayed.add(`${docId}|${rid}`);
+          }),
+        onCommit: (docId, rid, seq, prev) => this.enqueue(async () => this.applyCommit(docId, rid, seq, prev)),
         onAwareness: (docId, entries) => this.enqueue(() => this.applyCursors(docId, entries)),
       });
     }
@@ -129,6 +145,57 @@ export class LiveHub {
       // A gap (a frame lost in a reconnect). Ask the server for what we missed.
       this.opts.push?.subscribe([{ docId, after: session.cursor }]);
     }
+  }
+
+  /**
+   * Commits can arrive out of order when two appends race to the database.
+   * Hold one whose predecessor is not in yet; if the gap is still open
+   * shortly after, re-read from the log.
+   */
+  private readonly heldCommits = new Map<string, Map<number, number>>();
+  /** Relays this device applied and has not seen the commit for yet. */
+  private readonly relayed = new Set<string>();
+
+  private applyCommit(docId: string, rid: string, seq: number, prev: number): void {
+    const session = this.sessions.get(docId);
+    if (!session) {
+      return;
+    }
+    if (!this.relayed.delete(`${docId}|${rid}`)) {
+      // Stored, but this device never got the content (it subscribed while
+      // the write was in flight). Read it from the log.
+      this.opts.push?.subscribe([{ docId, after: session.cursor }]);
+      return;
+    }
+    if (this.relayed.size > 5_000) {
+      this.relayed.clear();
+    }
+    const held = this.heldCommits.get(docId) ?? new Map<number, number>();
+    held.set(prev, seq);
+    // Advance through every commit that is now contiguous.
+    let moved = true;
+    while (moved) {
+      moved = false;
+      for (const [p, s] of held) {
+        if (p <= session.cursor) {
+          session.cursor = Math.max(session.cursor, s);
+          held.delete(p);
+          moved = true;
+        }
+      }
+    }
+    if (held.size === 0) {
+      this.heldCommits.delete(docId);
+      return;
+    }
+    this.heldCommits.set(docId, held);
+    const waitingFor = session.cursor;
+    setTimeout(() => {
+      if (this.sessions.get(docId) === session && session.cursor === waitingFor && this.heldCommits.get(docId)?.size) {
+        this.heldCommits.delete(docId);
+        this.opts.push?.subscribe([{ docId, after: session.cursor }]);
+      }
+    }, 1_500);
   }
 
   private async applyCursors(docId: string, entries: LiveAwarenessWire[]): Promise<void> {

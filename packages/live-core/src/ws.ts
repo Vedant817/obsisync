@@ -43,6 +43,9 @@ export interface LivePushHandlers {
   onDown?(error: Error | null): void;
   onPage?(delta: LiveDocDelta): void;
   onPush?(docId: string, event: LiveEventWire & { prev: number }): void;
+  /** Typing relayed before it was stored. Apply it; the cursor waits for onCommit. */
+  onRelay?(docId: string, rid: string, event: Omit<LiveEventWire, "seq">): void;
+  onCommit?(docId: string, rid: string, seq: number, prev: number): void;
   onAwareness?(docId: string, entries: LiveAwarenessWire[]): void;
   /** A file-sync commit landed in the vault. */
   onFiles?(): void;
@@ -299,6 +302,12 @@ export class WsLiveTransport implements LiveTransport, LivePushChannel {
       }
       case "push":
         this.emit((h) => h.onPush?.(msg.docId, msg.event));
+        return;
+      case "relay":
+        this.emit((h) => h.onRelay?.(msg.docId, msg.rid, msg.event));
+        return;
+      case "commit":
+        this.emit((h) => h.onCommit?.(msg.docId, msg.rid, msg.seq, msg.prev));
         return;
       case "aw":
         this.emit((h) => h.onAwareness?.(msg.docId, msg.entries));
