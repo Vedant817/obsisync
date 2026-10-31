@@ -3,6 +3,8 @@ import {
   aeadDecrypt,
   aeadEncrypt,
   constantTimeEquals,
+  contentEnvelopeDecrypt,
+  contentEnvelopeEncrypt,
   CryptoError,
   DEFAULT_KDF_PARAMS_TEMPLATE,
   decryptManifest,
@@ -198,6 +200,36 @@ describe("AEAD envelope", () => {
       keyEpoch: 1,
     });
     expect(new TextDecoder().decode(dec)).toBe("body");
+  });
+
+  it("opens a note bound to a different file id than the caller has", async () => {
+    const key = randomKey();
+    const identity = { vaultId, fileId, revisionId: rev, keyEpoch: 1 };
+    const encrypted = await contentEnvelopeEncrypt({
+      plaintext: new TextEncoder().encode("later edit"),
+      key,
+      identity,
+    });
+    const plain = await contentEnvelopeDecrypt({
+      payload: encrypted.payload,
+      key,
+      identity: { ...identity, fileId: "other-device-file-id" },
+    });
+    expect(new TextDecoder().decode(plain)).toBe("later edit");
+  });
+
+  it("stays closed when the key is wrong, even if the hint names another file", async () => {
+    const identity = { vaultId, fileId, revisionId: rev, keyEpoch: 1 };
+    const encrypted = await contentEnvelopeEncrypt({
+      plaintext: new TextEncoder().encode("secret"),
+      key: randomKey(),
+      identity,
+    });
+    await expect(contentEnvelopeDecrypt({
+      payload: encrypted.payload,
+      key: randomKey(),
+      identity: { ...identity, fileId: "other-device-file-id" },
+    })).rejects.toBeInstanceOf(CryptoError);
   });
 });
 

@@ -126,10 +126,10 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
     // A delete the user already made is removed again if the bytes came back,
     // then missing-note recovery runs. Recovery must not undo that decision.
     await enforceObservedDeletes();
-    await settleOpenConflicts();
+    errors.push(...await settleOpenConflicts());
     // A device that lost most of its notes must download them again.
     // Scanning first would upload those gaps as deletes.
-    await restoreMissingNotes();
+    errors.push(...await restoreMissingNotes());
 
     // 2. Capture local changes (full-scan reconciliation, deletion rules).
     const scan = await collectCandidateChanges(deps.vault, deps.journal.raw);
@@ -155,7 +155,19 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       }
       let blocked = false;
       for (const event of changes.events) {
-        const result = await reconcileRemoteEvent(event, { autoMerge: opts.autoMerge !== false });
+        let result: ReconcileResult;
+        try {
+          result = await reconcileRemoteEvent(event, { autoMerge: opts.autoMerge !== false });
+        } catch (err) {
+          // One note that cannot be opened must not abort the cycle. The cursor
+          // stays on this event so a later poll retries it.
+          result = {
+            pulled: 0,
+            conflicts: 0,
+            errors: [`pull ${event.revisionId}: ${err instanceof Error ? err.message : String(err)}`],
+            blocked: true,
+          };
+        }
         pulls += result.pulled;
         conflicts += result.conflicts;
         errors.push(...result.errors);
@@ -1043,7 +1055,8 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
   }
 
   /** Clear a prompt left by an older build. The later edit is written during this cycle. */
-  async function settleOpenConflicts(): Promise<void> {
+  async function settleOpenConflicts(): Promise<string[]> {
+    const errors: string[] = [];
     for (const record of deps.journal.unresolvedConflicts()) {
       if (record.origin !== "remote_changed" || !record.remoteHeadRevisionId) {
         continue;
@@ -1053,18 +1066,23 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
         deps.journal.resolveConflict(record.fileId);
         continue;
       }
-      const remoteBytes = await fetchRemoteContent(record.fileId, record.remoteHeadRevisionId);
-      const localBytes = await deps.vault.readFile(file.localPath).catch(() => null);
-      if (remoteBytes === null || localBytes === null) {
-        continue;
+      try {
+        const remoteBytes = await fetchRemoteContent(record.fileId, record.remoteHeadRevisionId);
+        const localBytes = await deps.vault.readFile(file.localPath).catch(() => null);
+        if (remoteBytes === null || localBytes === null) {
+          continue;
+        }
+        await keepOneNote(file.localPath, localBytes, remoteBytes, {
+          fileId: record.fileId,
+          remoteRevisionId: record.remoteHeadRevisionId,
+          baseRevisionId: record.baseRevisionId,
+          origin: "remote_changed",
+        });
+      } catch (err) {
+        errors.push(`open note: ${err instanceof Error ? err.message : String(err)}`);
       }
-      await keepOneNote(file.localPath, localBytes, remoteBytes, {
-        fileId: record.fileId,
-        remoteRevisionId: record.remoteHeadRevisionId,
-        baseRevisionId: record.baseRevisionId,
-        origin: "remote_changed",
-      });
     }
+    return errors;
   }
 
   async function localIsNewer(path: string, remoteCreatedAt: string): Promise<boolean> {
@@ -1175,7 +1193,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
    * A note the journal already gave up on is downloaded when that path was
    * not just deleted by the user.
    */
-  async function restoreMissingNotes(): Promise<void> {
+  async function restoreMissingNotes(): Promise<string[]> {
     const listed = await deps.vault.listFiles();
     const onDisk = new Set(
       listed
@@ -1186,7 +1204,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       (file) => !file.deletedLocally && !file.supersededBy,
     ).length;
     if (deps.journal.cursor === 0 && liveJournal === 0) {
-      return;
+      return [];
     }
 
     const latest = new Map<string, ChangeEventWire>();
@@ -1279,9 +1297,10 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       ...(held.length >= 3 ? held : []),
     ];
     if (todo.length === 0) {
-      return;
+      return [];
     }
 
+    const errors: string[] = [];
     for (const event of todo) {
       const rev = event.revision;
       if (!rev || rev.isTombstone) {
@@ -1294,9 +1313,14 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       if (known) {
         deps.journal.updateFile(event.fileId, { deletedLocally: false, supersededBy: undefined });
       }
-      await pullRevisionContent(event.fileId, rev);
+      try {
+        await pullRevisionContent(event.fileId, rev);
+      } catch (err) {
+        errors.push(`restore ${event.revisionId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
     await deps.journal.persist();
+    return errors;
   }
 
   async function manifestPath(fileId: string, rev: RevisionMeta, fallback: string): Promise<string> {

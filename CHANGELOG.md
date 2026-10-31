@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.12
+
+- A note encrypted under a different file id still opens, so one undecryptable record no longer stops the rest of the sync. The later edit is written on the next cycle.
+
 ## 0.2.11
 
 - When two devices edit the same note, the later edit replaces it. The settings page no longer asks you to keep one side.

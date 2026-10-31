@@ -192,5 +192,25 @@ export async function contentEnvelopeDecrypt(input: {
   key: Uint8Array;
   identity: { vaultId: string; fileId: string; revisionId: string; keyEpoch: number };
 }): Promise<Uint8Array> {
-  return envelopeDecrypt(deserializeEnvelope(input.payload), input.key, contentAad(input.identity));
+  const env = deserializeEnvelope(input.payload);
+  try {
+    return await envelopeDecrypt(env, input.key, contentAad(input.identity));
+  } catch (err) {
+    // A note can be tracked under a different file id than the one bound into
+    // the ciphertext. The hint is unauthenticated until this second open
+    // succeeds, so a wrong key or a rewritten hint still fails closed.
+    const hintFile = env.aadHint?.fileId;
+    const hintEpoch = typeof env.aadHint?.keyEpoch === "number" ? env.aadHint.keyEpoch : input.identity.keyEpoch;
+    const sameIdentity = hintFile === input.identity.fileId && hintEpoch === input.identity.keyEpoch;
+    const otherVault = Boolean(env.aadHint?.vaultId) && env.aadHint.vaultId !== input.identity.vaultId;
+    if (!hintFile || sameIdentity || otherVault) {
+      throw err;
+    }
+    return envelopeDecrypt(env, input.key, contentAad({
+      vaultId: input.identity.vaultId,
+      fileId: hintFile,
+      revisionId: input.identity.revisionId,
+      keyEpoch: hintEpoch,
+    }));
+  }
 }

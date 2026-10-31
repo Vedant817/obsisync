@@ -229,6 +229,61 @@ describe("pull cycle", () => {
     expect(h.journal.getFile(file.fileId)!.lastAppliedRevisionId).toBe(remoteRev);
   });
 
+  it("writes the server note when an older conflict names a different file id", async () => {
+    const h = harness();
+    await h.vault.writeFile("notes/a.md", enc.encode("old local"));
+    await h.engine.runCycle();
+    const local = firstFile(h);
+    const remote = await h.server.otherDeviceWrite("device-B", "bbbbbbbbbbbbbbbb", "notes/a.md", "server edit");
+    h.journal.setCursor(1_000_000);
+    h.journal.addConflict({
+      fileId: local.fileId,
+      otherPath: null,
+      baseRevisionId: local.lastAppliedRevisionId,
+      remoteHeadRevisionId: remote.revisionId,
+      origin: "remote_changed",
+      createdAt: Date.now(),
+      resolved: false,
+    });
+    await h.journal.persist();
+    const spliced = ["This device", "old local", "---", "Other device", "server edit", ""].join("\n");
+    await h.vault.writeFile("notes/a.md", enc.encode(spliced));
+
+    const report = await h.engine.runCycle();
+    expect(report.started).toBe(true);
+    expect(report.errors).toEqual([]);
+    expect(dec.decode(await h.vault.readFile("notes/a.md"))).toBe("server edit");
+    expect(h.journal.unresolvedConflicts()).toHaveLength(0);
+  });
+
+  it("keeps cycling when an open conflict cannot be decrypted", async () => {
+    const h = harness();
+    await h.vault.writeFile("notes/a.md", enc.encode("keep"));
+    await h.engine.runCycle();
+    const local = firstFile(h);
+    const remote = await h.server.otherDeviceWrite("device-B", "bbbbbbbbbbbbbbbb", "notes/a.md", "server edit");
+    const meta = await h.server.getRevision(remote.revisionId);
+    expect(meta?.blobObjectId).toBeTruthy();
+    h.server.objects.set(meta!.blobObjectId!, enc.encode("{\"not\":\"an envelope\"}"));
+    h.journal.setCursor(1_000_000);
+    h.journal.addConflict({
+      fileId: local.fileId,
+      otherPath: null,
+      baseRevisionId: local.lastAppliedRevisionId,
+      remoteHeadRevisionId: remote.revisionId,
+      origin: "remote_changed",
+      createdAt: Date.now(),
+      resolved: false,
+    });
+    await h.journal.persist();
+
+    const report = await h.engine.runCycle();
+    expect(report.started).toBe(true);
+    expect(report.errors.some((line) => line.includes("CryptoError"))).toBe(true);
+    expect(dec.decode(await h.vault.readFile("notes/a.md"))).toBe("keep");
+    expect(h.journal.unresolvedConflicts()).toHaveLength(1);
+  });
+
   it("publishes a later local binary and does not add a second file", async () => {
     const h = harness();
     await h.vault.writeFile("data.bin", new Uint8Array([0, 1, 2, 3]));
