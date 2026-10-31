@@ -22,7 +22,7 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
   override settings: VaultBridgeSettings = emptySettings();
   readonly plugin = this;
   private realtime: RealtimeSync | null = null;
-  private poll: ReturnType<typeof setInterval> | null = null;
+  private poll: number | null = null;
   /** One WebSocket per vault: live edits, cursors, and "files changed" pushes. */
   private channel: WsLiveTransport | null = null;
   private lastSafetyPoll = 0;
@@ -36,7 +36,8 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
 
   override async onload(): Promise<void> {
     this.status = this.addStatusBarItem();
-    this.settings = Object.assign(emptySettings(), await this.loadData());
+    const saved = (await this.loadData()) as Partial<VaultBridgeSettings> | null;
+    this.settings = Object.assign(emptySettings(), saved ?? {});
     this.settings.serverUrl = canonicalServerUrl(this.settings.serverUrl);
     this.settings.pollMs = this.settings.pollMs > 0 ? this.settings.pollMs : 1000;
     await this.saveSettings();
@@ -54,7 +55,7 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
     void this.live.detach().finally(() => this.channel?.stop());
     const flushing = this.realtime?.flush();
     if (this.poll) {
-      clearInterval(this.poll);
+      window.clearInterval(this.poll);
       this.poll = null;
     }
     void flushing;
@@ -77,7 +78,7 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
         this.setStatus("Sealed Sync live · locked");
         return;
       }
-      const vault = new ObsidianLocalVault(this.app.vault, (path, bytes) => this.live.beforeSyncWrite(path, bytes));
+      const vault = new ObsidianLocalVault(this.app, this.pluginDir(), (path, bytes) => this.live.beforeSyncWrite(path, bytes));
       const engine = await openEngine(vault, this.settings, sender, async (next) => {
         this.settings = next;
         await this.saveSettings();
@@ -106,7 +107,7 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
         }
       });
       const pollMs = Platform.isMobile && this.settings.pollMs === 1000 ? 5_000 : this.settings.pollMs;
-      this.poll = setInterval(() => {
+      this.poll = window.setInterval(() => {
         // With the socket up, the server announces new commits, so the poll
         // is only a safety net. Without it, poll at the normal rate.
         if (this.channel?.connected && Date.now() - this.lastSafetyPoll < SAFETY_POLL_MS) {
@@ -115,7 +116,7 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
         this.lastSafetyPoll = Date.now();
         this.realtime?.noteChange();
       }, pollMs);
-      this.registerInterval(this.poll as unknown as number);
+      this.registerInterval(this.poll);
       if (!this.settings.uploadsPaused) {
         this.realtime.noteChange();
       }
@@ -151,7 +152,7 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
           token: this.settings.deviceToken,
           sender: this.sender(),
         });
-      const store = new AdapterLiveStore(this.app.vault.adapter, `${this.manifest.dir ?? ".obsidian/plugins/obsisync"}/live`);
+      const store = new AdapterLiveStore(this.app.vault.adapter, `${this.pluginDir()}/live`);
       const hub = new LiveHub({
         cipher,
         transport,
@@ -211,6 +212,11 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
     return this.channel.connected
       ? "Connected over WebSocket. Edits and new files arrive as they happen."
       : "Reconnecting. Sync falls back to polling until the connection is back.";
+  }
+
+  /** This plugin's folder inside the vault's configuration folder. */
+  private pluginDir(): string {
+    return this.manifest.dir ?? `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
   }
 
   deviceLabel(): string {
@@ -400,14 +406,15 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
     this.realtime?.stop();
     this.realtime = null;
     if (this.poll) {
-      clearInterval(this.poll);
+      window.clearInterval(this.poll);
       this.poll = null;
     }
   }
 
   private async rememberDelete(path: string): Promise<void> {
     const norm = path.replace(/\\/g, "/");
-    if (!this.engine || norm === ".obsidian" || norm.startsWith(".obsidian/")) {
+    const configDir = this.app.vault.configDir;
+    if (!this.engine || norm === configDir || norm.startsWith(`${configDir}/`)) {
       return;
     }
     await this.engine.noteDeleted(norm);

@@ -54,7 +54,7 @@ export async function collectCandidateChanges(
 
   // 1. Known tracked paths: created/modified/deleted.
   for (const [path, fileId] of Object.entries(journal.pathToFileId)) {
-    const state = journal.files[fileId!];
+    const state = journal.files[fileId];
     if (!state) {
       continue;
     }

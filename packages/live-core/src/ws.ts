@@ -84,13 +84,13 @@ export class WsLiveTransport implements LiveTransport, LivePushChannel {
   private stopped = true;
   private fatal: Error | null = null;
   private backoffMs = 0;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: number | null = null;
+  private pingTimer: number | null = null;
   private lastHeard = 0;
   private nextId = 1;
   private readonly pending = new Map<
     number,
-    { resolve: (r: LiveAppendResponse) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
+    { resolve: (r: LiveAppendResponse) => void; reject: (e: Error) => void; timer: number }
   >();
   private readonly listeners = new Set<LivePushHandlers>();
   private readonly opts: Required<Omit<WsLiveTransportOptions, "socketFactory">> & { socketFactory: SocketFactory };
@@ -130,7 +130,7 @@ export class WsLiveTransport implements LiveTransport, LivePushChannel {
   stop(): void {
     this.stopped = true;
     if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
+      window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     this.teardown(null);
@@ -145,7 +145,7 @@ export class WsLiveTransport implements LiveTransport, LivePushChannel {
       return;
     }
     if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
+      window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     this.backoffMs = 0;
@@ -201,13 +201,13 @@ export class WsLiveTransport implements LiveTransport, LivePushChannel {
   private appendOverSocket(docId: string, request: LiveAppendRequest): Promise<LiveAppendResponse> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const timer = window.setTimeout(() => {
         this.pending.delete(id);
         reject(new LiveUnavailableError("live ack timed out", null));
       }, this.opts.ackTimeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       if (!this.sendFrame({ t: "append", id, docId, ...request })) {
-        clearTimeout(timer);
+        window.clearTimeout(timer);
         this.pending.delete(id);
         reject(new LiveUnavailableError("live socket closed", null));
       }
@@ -261,7 +261,7 @@ export class WsLiveTransport implements LiveTransport, LivePushChannel {
     socket.onerror = () => {
       /* onclose follows */
     };
-    this.pingTimer = setInterval(() => {
+    this.pingTimer = window.setInterval(() => {
       if (this.socket !== socket) {
         return;
       }
@@ -318,7 +318,7 @@ export class WsLiveTransport implements LiveTransport, LivePushChannel {
       case "ack": {
         const waiter = this.pending.get(msg.id);
         if (waiter) {
-          clearTimeout(waiter.timer);
+          window.clearTimeout(waiter.timer);
           this.pending.delete(msg.id);
           const { t: _t, id: _id, ...response } = msg;
           waiter.resolve(response);
@@ -328,7 +328,7 @@ export class WsLiveTransport implements LiveTransport, LivePushChannel {
       case "nack": {
         const waiter = this.pending.get(msg.id);
         if (waiter) {
-          clearTimeout(waiter.timer);
+          window.clearTimeout(waiter.timer);
           this.pending.delete(msg.id);
           waiter.reject(new LiveUnavailableError(msg.message, msg.status, msg.code));
         }
@@ -362,11 +362,11 @@ export class WsLiveTransport implements LiveTransport, LivePushChannel {
     this.socket = null;
     this.ready = false;
     if (this.pingTimer) {
-      clearInterval(this.pingTimer);
+      window.clearInterval(this.pingTimer);
       this.pingTimer = null;
     }
     for (const [id, waiter] of this.pending) {
-      clearTimeout(waiter.timer);
+      window.clearTimeout(waiter.timer);
       waiter.reject(new LiveUnavailableError("live socket closed", null));
       this.pending.delete(id);
     }
@@ -395,7 +395,7 @@ export class WsLiveTransport implements LiveTransport, LivePushChannel {
     }
     this.backoffMs = Math.min(this.opts.maxBackoffMs, Math.max(1_000, this.backoffMs * 2));
     const jitter = Math.floor(Math.random() * 250);
-    this.reconnectTimer = setTimeout(() => {
+    this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
     }, this.backoffMs + jitter);

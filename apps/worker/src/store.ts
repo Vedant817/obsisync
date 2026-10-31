@@ -27,7 +27,7 @@ async function one<T>(db: D1DatabaseLike, sql: string, params: SqlValue[]): Prom
 
 async function many<T>(db: D1DatabaseLike, sql: string, params: SqlValue[]): Promise<T[]> {
   const result = await db.prepare(sql).bind(...params).all<T>();
-  return result.success ? (result.results as T[]) : [];
+  return result.success ? (result.results) : [];
 }
 
 // ---------------------------------------------------------------------------

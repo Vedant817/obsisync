@@ -143,7 +143,7 @@ export class TursoDatabase implements D1DatabaseLike {
     return new TursoStatement(this, sql);
   }
 
-  async batch<T = unknown>(statements: D1Statement[]): Promise<D1StatementResult[]> {
+  async batch(statements: D1Statement[]): Promise<D1StatementResult[]> {
     if (statements.length === 0) {
       return [];
     }
@@ -158,7 +158,7 @@ export class TursoDatabase implements D1DatabaseLike {
     const steps = await this.pipeline(requests);
     const executed = steps.filter((step) => step.kind === "execute");
     const firstStatement = 2;
-    return statements.map((_, index) => runMeta(executed[firstStatement + index]?.result)) as unknown as D1StatementResult[];
+    return statements.map((_, index) => runMeta(executed[firstStatement + index]?.result));
   }
 
   async executeOne(sql: string, params: SqlValue[]): Promise<D1StatementResult> {

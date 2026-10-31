@@ -24,49 +24,6 @@ import {
 } from "@vaultbridge/sync-core";
 import type { VaultBridgeSettings } from "./settings.js";
 
-export function createFetchSender(baseUrl: string, fetchImpl: typeof fetch = fetch): HttpSender {
-  const root = baseUrl.replace(/\/$/, "");
-  return async (method, path, init) => {
-    const url = new URL(`${root}/v1${path.startsWith("/") ? path : `/${path}`}`);
-    if (init.query) {
-      for (const [key, value] of Object.entries(init.query)) {
-        url.searchParams.set(key, value);
-      }
-    }
-    const headers: Record<string, string> = {
-      "x-vb-protocol": String(init.protocolVersion ?? 1),
-    };
-    if (init.token) {
-      headers.authorization = `Bearer ${init.token}`;
-    }
-    let body: BodyInit | undefined;
-    if (init.rawBody) {
-      headers["content-type"] = "application/octet-stream";
-      body = copyBytes(init.rawBody);
-    } else if (init.json !== undefined) {
-      headers["content-type"] = "application/json";
-      body = JSON.stringify(init.json);
-    }
-    const response = await fetchImpl(url, { method, headers, body });
-    const text = await response.text();
-    let parsed: unknown = null;
-    if (text) {
-      try {
-        parsed = JSON.parse(text) as unknown;
-      } catch {
-        parsed = text;
-      }
-    }
-    return { status: response.status, body: parsed };
-  };
-}
-
-function copyBytes(bytes: Uint8Array): ArrayBuffer {
-  const copy = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(copy).set(bytes);
-  return copy;
-}
-
 export async function ensureDevice(
   settings: VaultBridgeSettings,
   sender: HttpSender,
@@ -94,7 +51,7 @@ export async function ensureDevice(
   });
   if (result.status !== 201 && result.status !== 200) {
     const message = result.body && typeof result.body === "object" && "message" in result.body
-      ? String((result.body as { message: unknown }).message)
+      ? String((result.body).message)
       : `bootstrap failed (${result.status})`;
     throw new Error(message);
   }
@@ -217,7 +174,7 @@ async function unlockFromPhrase(state: VaultStateWire, recoveryPhrase: string): 
 
 function messageOf(body: unknown, fallback: string): string {
   if (body && typeof body === "object" && "message" in body) {
-    return String((body as { message: unknown }).message);
+    return String((body).message);
   }
   return fallback;
 }

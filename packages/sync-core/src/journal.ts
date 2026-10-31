@@ -3,7 +3,7 @@
  * or network action"). The engine awaits `persist()` before staging, uploading
  * or acknowledging; persistence failures abort the cycle (fail closed).
  */
-import type { FileId, RevisionId } from "@vaultbridge/protocol";
+import type { FileId } from "@vaultbridge/protocol";
 import type { JournalPersistence } from "./ports.js";
 import {
   emptyJournal,

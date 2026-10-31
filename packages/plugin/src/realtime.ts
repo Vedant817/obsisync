@@ -7,7 +7,7 @@ export type RealtimeOutcome = SyncCycleReport | { error: string };
  * `noteChange`. Overlapping cycles collapse into one follow-up run.
  */
 export class RealtimeSync {
-  private timer: ReturnType<typeof setTimeout> | null = null;
+  private timer: number | null = null;
   private running = false;
   private queued = false;
   private stopped = false;
@@ -23,9 +23,9 @@ export class RealtimeSync {
       return;
     }
     if (this.timer) {
-      clearTimeout(this.timer);
+      window.clearTimeout(this.timer);
     }
-    this.timer = setTimeout(() => {
+    this.timer = window.setTimeout(() => {
       this.timer = null;
       void this.kick();
     }, this.debounceMs);
@@ -59,7 +59,7 @@ export class RealtimeSync {
       return;
     }
     if (this.timer) {
-      clearTimeout(this.timer);
+      window.clearTimeout(this.timer);
       this.timer = null;
     }
     await this.kick();
@@ -69,7 +69,7 @@ export class RealtimeSync {
   stop(): void {
     this.stopped = true;
     if (this.timer) {
-      clearTimeout(this.timer);
+      window.clearTimeout(this.timer);
       this.timer = null;
     }
   }

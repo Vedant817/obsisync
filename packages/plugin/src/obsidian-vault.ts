@@ -1,11 +1,14 @@
 import { sha256HexBytes } from "@vaultbridge/crypto";
 import type { LocalFileMeta, LocalVault } from "@vaultbridge/sync-core";
-import { TFile, TFolder, type Vault } from "obsidian";
+import { TFile, TFolder, type App, type Vault } from "obsidian";
+
+/** Obsidian's own trash folder at the vault root. Deleted notes land here; it never syncs. */
+const OBSIDIAN_TRASH = ".trash";
 
 /**
  * Obsidian vault adapter.
- * `getFiles()` lists every path except `.obsidian` so sync can see adds, edits, and deletes.
- * Conflict names are repaired by the engine.
+ * `getFiles()` lists every path except the configuration folder and `.trash`,
+ * so sync can see adds, edits, and deletes. Conflict names are repaired by the engine.
  */
 export class ObsidianLocalVault implements LocalVault {
   /**
@@ -13,15 +16,21 @@ export class ObsidianLocalVault implements LocalVault {
    * return false so the editor is not overwritten. File sync then sees the
    * live text on disk and uploads it as the later edit.
    */
+  private readonly vault: Vault;
+
   constructor(
-    private readonly vault: Vault,
+    private readonly app: App,
+    /** This plugin's folder, for safety snapshots. */
+    private readonly pluginDir: string,
     private readonly beforeWrite?: (path: string, bytes: Uint8Array) => Promise<boolean>,
-  ) {}
+  ) {
+    this.vault = app.vault;
+  }
 
   async listFiles(): Promise<LocalFileMeta[]> {
     const out: LocalFileMeta[] = [];
     for (const file of this.vault.getFiles()) {
-      if (excluded(file.path)) {
+      if (excluded(file.path, this.vault.configDir)) {
         continue;
       }
       out.push({ path: file.path, size: file.stat.size, mtimeMs: file.stat.mtime });
@@ -51,7 +60,9 @@ export class ObsidianLocalVault implements LocalVault {
   async deleteFile(rel: string): Promise<void> {
     const existing = this.vault.getAbstractFileByPath(rel);
     if (existing instanceof TFile) {
-      await this.vault.delete(existing);
+      // Follows the user's "Deleted files" preference (system trash, Obsidian
+      // trash, or permanent), so a delete from another device is recoverable.
+      await this.app.fileManager.trashFile(existing);
     }
   }
 
@@ -71,7 +82,7 @@ export class ObsidianLocalVault implements LocalVault {
       return;
     }
     const bytes = await this.readFile(rel);
-    const dest = `.obsidian/plugins/vaultbridge/snapshots/${label}/${rel}`;
+    const dest = `${this.pluginDir}/snapshots/${label}/${rel}`;
     const folder = dest.slice(0, dest.lastIndexOf("/"));
     const adapter = this.vault.adapter;
     if (!(await adapter.exists(folder))) {
@@ -102,9 +113,14 @@ export class ObsidianLocalVault implements LocalVault {
   }
 }
 
-function excluded(rel: string): boolean {
+function excluded(rel: string, configDir: string): boolean {
   const norm = rel.replace(/\\/g, "/");
-  return norm === ".obsidian" || norm.startsWith(".obsidian/");
+  return (
+    norm === configDir ||
+    norm.startsWith(`${configDir}/`) ||
+    norm === OBSIDIAN_TRASH ||
+    norm.startsWith(`${OBSIDIAN_TRASH}/`)
+  );
 }
 
 function copyBytes(bytes: Uint8Array): ArrayBuffer {

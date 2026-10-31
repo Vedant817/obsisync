@@ -31,7 +31,7 @@ function toSqliteValue(v: SqlValue | undefined): SqlValueJs {
   if (v === undefined) {
     return null;
   }
-  return v as SqlValueJs;
+  return v;
 }
 
 class Prepared implements D1Statement {
@@ -120,7 +120,7 @@ export class FakeD1 implements D1DatabaseLike {
     return new Prepared(this.db, sql);
   }
 
-  async batch<T = unknown>(statements: D1Statement[]): Promise<D1StatementResult[]> {
+  async batch(statements: D1Statement[]): Promise<D1StatementResult[]> {
     if (statements.length === 0) {
       return [];
     }
@@ -139,7 +139,7 @@ export class FakeD1 implements D1DatabaseLike {
       }
       this.db.exec("COMMIT");
       void preparedStatement;
-      return results as unknown as D1StatementResult[];
+      return results;
     } catch (err) {
       this.db.exec("ROLLBACK");
       throw err as Error;
@@ -152,7 +152,7 @@ export class FakeD1 implements D1DatabaseLike {
 
   /** Test introspection: raw table dump (never a production interface). */
   dumpAll(table: string): unknown[] {
-    return this.db.prepare(`SELECT * FROM ${table}`).all() as unknown[];
+    return this.db.prepare(`SELECT * FROM ${table}`).all();
   }
 
   count(table: string): number {

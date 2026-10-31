@@ -86,12 +86,12 @@ describe("editor <-> Y.Text translation", () => {
 
 describe("which notes go live", () => {
   it("covers markdown and text under the size cap only", () => {
-    expect(liveEligible("Notes/a.md", 10)).toBe(true);
-    expect(liveEligible("Notes/a.MD", 10)).toBe(true);
-    expect(liveEligible("todo.txt", 10)).toBe(true);
-    expect(liveEligible("img.png", 10)).toBe(false);
-    expect(liveEligible("board.canvas", 10)).toBe(false);
-    expect(liveEligible("big.md", 2_000_000)).toBe(false);
-    expect(liveEligible(".obsidian/app.md", 10)).toBe(false);
+    expect(liveEligible("Notes/a.md", 10, ".obsidian")).toBe(true);
+    expect(liveEligible("Notes/a.MD", 10, ".obsidian")).toBe(true);
+    expect(liveEligible("todo.txt", 10, ".obsidian")).toBe(true);
+    expect(liveEligible("img.png", 10, ".obsidian")).toBe(false);
+    expect(liveEligible("board.canvas", 10, ".obsidian")).toBe(false);
+    expect(liveEligible("big.md", 2_000_000, ".obsidian")).toBe(false);
+    expect(liveEligible(".obsidian/app.md", 10, ".obsidian")).toBe(false);
   });
 });

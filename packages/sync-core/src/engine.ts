@@ -407,13 +407,13 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       return { pushed: 0, skipped: 0, conflicts: 1 };
     }
 
-    let outgoingBytes: Uint8Array = contentBytes!;
+    let outgoingBytes: Uint8Array = contentBytes;
     let outgoingHash: string = currentHash!;
     let outgoingBase: string | null = localBase;
 
     if (remoteIsAdvanced && contentBytes !== null) {
-      const remoteBytes = await fetchRemoteContent(pending.fileId, remoteHeadId!);
-      const rev = await deps.transport.getRevision(remoteHeadId!);
+      const remoteBytes = await fetchRemoteContent(pending.fileId, remoteHeadId);
+      const rev = await deps.transport.getRevision(remoteHeadId);
       const keepLocal = rev !== null && await localIsNewer(file.localPath, rev.createdAt);
       if (remoteBytes !== null && !keepLocal) {
         await deps.vault.writeFile(file.localPath, remoteBytes);
@@ -761,7 +761,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
         const pendingId = file.pendingOperationId;
         if (pendingId && deps.journal.raw.pending[pendingId]) {
           deps.journal.raw.pending[pendingId] = {
-            ...deps.journal.raw.pending[pendingId]!,
+            ...deps.journal.raw.pending[pendingId],
             baseRevisionId: rev.revisionId,
           };
         }
@@ -841,7 +841,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       const pendingId = file.pendingOperationId;
       if (pendingId && deps.journal.raw.pending[pendingId]) {
         deps.journal.raw.pending[pendingId] = {
-          ...deps.journal.raw.pending[pendingId]!,
+          ...deps.journal.raw.pending[pendingId],
           baseRevisionId: rev.revisionId,
         };
       }
@@ -1104,7 +1104,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       const pendingId = file?.pendingOperationId;
       if (pendingId && deps.journal.raw.pending[pendingId]) {
         deps.journal.raw.pending[pendingId] = {
-          ...deps.journal.raw.pending[pendingId]!,
+          ...deps.journal.raw.pending[pendingId],
           baseRevisionId: meta.remoteRevisionId,
         };
       }
@@ -1137,7 +1137,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
             const pendingId = file.pendingOperationId;
             if (pendingId && deps.journal.raw.pending[pendingId]) {
               deps.journal.raw.pending[pendingId] = {
-                ...deps.journal.raw.pending[pendingId]!,
+                ...deps.journal.raw.pending[pendingId],
                 baseRevisionId: rev.revisionId,
               };
             }
@@ -1619,7 +1619,7 @@ export function createSyncEngine(deps: SyncEngineDeps): SyncEngine {
       const pendingId = file.pendingOperationId;
       if (pendingId && deps.journal.raw.pending[pendingId]) {
         deps.journal.raw.pending[pendingId] = {
-          ...deps.journal.raw.pending[pendingId]!,
+          ...deps.journal.raw.pending[pendingId],
           baseRevisionId: record.remoteHeadRevisionId,
         };
       }
@@ -1804,7 +1804,7 @@ export function normalizeLocalPath(raw: string): string {
     throw new Error("unsafe empty or traversing path from manifest");
   }
   const normalized = parts.join("/");
-  if (/[\u0000-\u001f]/.test(normalized)) {
+  if (hasControlCharacter(normalized)) {
     throw new Error("unsafe control character in path");
   }
   if (new TextEncoder().encode(normalized).byteLength > 255) {
@@ -1913,4 +1913,14 @@ function deps_pendingRefresh(journal: SyncJournal, operationId: string, fingerpr
   if (pending.stage === "captured") {
     journal.raw.pending[operationId] = { ...pending, localContentFingerprint: fingerprint };
   }
+}
+
+/** True when the path holds a C0 control character (U+0000 to U+001F). */
+function hasControlCharacter(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    if (value.charCodeAt(i) < 0x20) {
+      return true;
+    }
+  }
+  return false;
 }

@@ -31,7 +31,7 @@ export interface AeadOutput {
 }
 
 const subtle = (): SubtleCrypto => {
-  const s = globalThis.crypto?.subtle;
+  const s = typeof crypto === "undefined" ? undefined : crypto.subtle;
   if (!s) {
     throw new CryptoError("WebCrypto subtle is unavailable in this runtime");
   }

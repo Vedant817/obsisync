@@ -93,7 +93,7 @@ async function withVault(
   // protocol version gate (spec T21)
   const client =
     Number(ctx.request.headers.get("x-vb-protocol") ?? "1") ||
-    Number((ctx.url.searchParams.get("protocol") as string | null) ?? "1");
+    Number((ctx.url.searchParams.get("protocol")) ?? "1");
   const serverVersion = Number(ctx.env.PROTOCOL_VERSION ?? 1);
   if (!Number.isFinite(client) || client > serverVersion) {
     throw new VaultBridgeError("PROTOCOL_VERSION_MISMATCH", `client protocol ${client} newer than server ${serverVersion}`);
@@ -417,7 +417,7 @@ async function handleCommit(ctx: RouteContext, vaultId: string): Promise<Respons
   return withVault(ctx, vaultId, async (auth, services) => {
     let dto: CommitRequest;
     try {
-      dto = CommitSchema.parse(await ctx.request.json()) as CommitRequest;
+      dto = CommitSchema.parse(await ctx.request.json());
     } catch (e) {
       throw new VaultBridgeError("INVALID_REQUEST", `commit body invalid: ${(e as Error).message}`);
     }

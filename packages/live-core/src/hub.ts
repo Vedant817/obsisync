@@ -59,7 +59,7 @@ export interface OpenedLiveDoc {
 export class LiveHub {
   private readonly sessions = new Map<string, LiveDocSession>();
   private readonly opening = new Map<string, Promise<OpenedLiveDoc>>();
-  private readonly persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly persistTimers = new Map<string, number>();
   private running = false;
   private stopped = false;
   private active = true;
@@ -190,7 +190,7 @@ export class LiveHub {
     }
     this.heldCommits.set(docId, held);
     const waitingFor = session.cursor;
-    setTimeout(() => {
+    window.setTimeout(() => {
       if (this.sessions.get(docId) === session && session.cursor === waitingFor && this.heldCommits.get(docId)?.size) {
         this.heldCommits.delete(docId);
         this.opts.push?.subscribe([{ docId, after: session.cursor }]);
@@ -223,7 +223,7 @@ export class LiveHub {
     const docId = await this.opts.cipher.docId(path);
     const existing = this.sessions.get(docId);
     if (existing && !existing.isClosed) {
-      return { session: existing, join: { text: existing.text.toString(), outcome: "in-sync", skipped: 0 } };
+      return { session: existing, join: { text: existing.text.toJSON(), outcome: "in-sync", skipped: 0 } };
     }
     const pending = this.opening.get(docId);
     if (pending) {
@@ -438,13 +438,13 @@ export class LiveHub {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
+      const timer = window.setTimeout(() => {
         this.wake = null;
         resolve();
       }, ms);
       // A kick during backoff retries at once.
       this.wake = () => {
-        clearTimeout(timer);
+        window.clearTimeout(timer);
         resolve();
       };
     });
@@ -460,7 +460,7 @@ export class LiveHub {
     }
     this.persistTimers.set(
       session.docId,
-      setTimeout(() => {
+      window.setTimeout(() => {
         this.persistTimers.delete(session.docId);
         void this.persistNow(session);
       }, this.opts.persistDelayMs),
@@ -471,7 +471,7 @@ export class LiveHub {
   private async persistNow(session: LiveDocSession): Promise<void> {
     const timer = this.persistTimers.get(session.docId);
     if (timer) {
-      clearTimeout(timer);
+      window.clearTimeout(timer);
       this.persistTimers.delete(session.docId);
     }
     try {

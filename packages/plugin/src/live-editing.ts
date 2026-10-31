@@ -54,8 +54,8 @@ export class LiveEditing {
   private readonly refs = new Map<string, number>();
   private readonly syncWritten = new Map<string, string>();
   private readonly recent = new Map<string, string[]>();
-  private readonly recentTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly ingestTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly recentTimers = new Map<string, number>();
+  private readonly ingestTimers = new Map<string, number>();
   private live: { hub: LiveHub; store: LiveStore } | null = null;
   private registered = false;
 
@@ -148,7 +148,7 @@ export class LiveEditing {
       }
     }
     for (const { cm, file } of panes) {
-      if (this.bindings.has(cm) || !file || claimed.has(file.path) || !liveEligible(file.path, file.stat.size)) {
+      if (this.bindings.has(cm) || !file || claimed.has(file.path) || !liveEligible(file.path, file.stat.size, this.deps.plugin.app.vault.configDir)) {
         continue;
       }
       claimed.add(file.path);
@@ -199,10 +199,10 @@ export class LiveEditing {
     // Typing during the join: replay it on top of the live text.
     const editorNow = cm.state.doc.toString();
     if (editorNow !== diskText) {
-      const merged = mergeText(diskText, editorNow, session.text.toString());
+      const merged = mergeText(diskText, editorNow, session.text.toJSON());
       applyTextChange(session.text, merged);
     }
-    const target = session.text.toString();
+    const target = session.text.toJSON();
     const shown = cm.state.doc.toString();
     try {
       cm.dispatch({
@@ -242,7 +242,7 @@ export class LiveEditing {
       if (this.showsPath(cm, file.path) && cm.state.doc.toString() === disk) {
         return disk;
       }
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
     }
     if (!this.showsPath(cm, file.path)) {
       throw new Error("the editor moved to another note");
@@ -300,9 +300,9 @@ export class LiveEditing {
     }
     this.recentTimers.set(
       session.docId,
-      setTimeout(() => {
+      window.setTimeout(() => {
         this.recentTimers.delete(session.docId);
-        void sha(session.text.toString()).then((hash) => {
+        void sha(session.text.toJSON()).then((hash) => {
           const list = this.recent.get(session.docId) ?? [];
           if (list[list.length - 1] !== hash) {
             list.push(hash);
@@ -337,7 +337,7 @@ export class LiveEditing {
     } catch {
       return true;
     }
-    if (text === session.text.toString()) {
+    if (text === session.text.toJSON()) {
       return false;
     }
     const stale =
@@ -356,16 +356,16 @@ export class LiveEditing {
   }
 
   private scheduleIngest(file: TFile): void {
-    if (this.stopped || !liveEligible(file.path, file.stat.size) || this.boundSession(file.path)) {
+    if (this.stopped || !liveEligible(file.path, file.stat.size, this.deps.plugin.app.vault.configDir) || this.boundSession(file.path)) {
       return;
     }
     const existing = this.ingestTimers.get(file.path);
     if (existing) {
-      clearTimeout(existing);
+      window.clearTimeout(existing);
     }
     this.ingestTimers.set(
       file.path,
-      setTimeout(() => {
+      window.setTimeout(() => {
         this.ingestTimers.delete(file.path);
         void this.ingest(file).catch(() => undefined);
       }, 1_500),
@@ -413,10 +413,10 @@ export class LiveEditing {
       return;
     }
     for (const timer of this.ingestTimers.values()) {
-      clearTimeout(timer);
+      window.clearTimeout(timer);
     }
     for (const timer of this.recentTimers.values()) {
-      clearTimeout(timer);
+      window.clearTimeout(timer);
     }
     for (const cm of [...this.bindings.keys()]) {
       try {

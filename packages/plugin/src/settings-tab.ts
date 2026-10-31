@@ -131,7 +131,7 @@ function renderJoin(container: HTMLElement, host: SettingsHost): void {
   let inviteId = "";
   let pairingCode = "";
   let recoveryPhrase = "";
-  new Setting(container).setName("Invite id").addText((text) => {
+  new Setting(container).setName("Invite ID").addText((text) => {
     text.onChange((value) => {
       inviteId = value.trim();
     });
@@ -317,7 +317,7 @@ function renderHistory(container: HTMLElement, host: SettingsHost): void {
 function renderRemote(container: HTMLElement, host: SettingsHost, redraw: () => void): void {
   container.createEl("h3", { text: "Vault" });
   const summary = container.createEl("p", { text: "Open this page again after a cycle to refresh, or use the button." });
-  const list = container.createEl("div");
+  const list = container.createDiv();
   new Setting(container).addButton((button) => {
     button.setButtonText("Refresh vault info").onClick(() => {
       void loadRemote(host, summary, list, redraw);
@@ -419,7 +419,7 @@ function messageOf(body: unknown): string {
     return body.message;
   }
   if (body && typeof body === "object" && "message" in body) {
-    return String((body as { message: unknown }).message);
+    return String((body).message);
   }
   return "Sealed Sync request failed";
 }

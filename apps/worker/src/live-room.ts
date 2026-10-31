@@ -76,7 +76,7 @@ export class LiveRoomCore {
   async onMessage(ws: RoomSocket, raw: string): Promise<void> {
     let msg: LiveClientMessage;
     try {
-      msg = messageSchema.parse(JSON.parse(raw)) as LiveClientMessage;
+      msg = messageSchema.parse(JSON.parse(raw));
     } catch {
       this.send(ws, { t: "error", status: 422, code: "INVALID_REQUEST", message: "malformed live frame" });
       return;

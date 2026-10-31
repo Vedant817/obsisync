@@ -101,7 +101,7 @@ class GuardedSync implements PluginValue {
         this.detach();
         return;
       }
-      const { changes, lengthBefore, lengthAfter } = deltaToChanges(event.delta as YDelta);
+      const { changes, lengthBefore, lengthAfter } = deltaToChanges(event.delta);
       const expectedBefore = this.target.ytext.length - lengthAfter + lengthBefore;
       if (this.view.state.doc.length !== expectedBefore) {
         this.resync();
@@ -140,7 +140,7 @@ class GuardedSync implements PluginValue {
 
   /** Make the editor read exactly what Y.Text says. */
   private resync(): void {
-    const target = this.target.ytext.toString();
+    const target = this.target.ytext.toJSON();
     const current = this.view.state.doc.toString();
     if (current === target) {
       return;

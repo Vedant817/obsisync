@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ERROR_CODES } from "./errors.js";
 
 /**
  * Logical entities shared between plugin and worker (spec §8).
@@ -224,3 +225,13 @@ export interface DeviceInfoWire {
 export interface DevicesResponse {
   devices: DeviceInfoWire[];
 }
+
+/** Server responses always carry this shape on failure. */
+export const VaultBridgeErrorPayloadSchema = z.object({
+  code: z.enum(ERROR_CODES),
+  message: z.string().min(1),
+  guidance: z.string().optional(),
+  retryable: z.boolean(),
+  requestId: z.string().optional(),
+  status: z.number().optional(),
+});

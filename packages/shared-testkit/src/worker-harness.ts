@@ -54,7 +54,7 @@ export function createWorkerHarness(overrides: Partial<VaultBridgeEnv> = {}): Wo
     }
     let body: BodyInit | undefined;
     if (opts.rawBody) {
-      body = new Uint8Array(opts.rawBody) as unknown as BodyInit;
+      body = new Uint8Array(opts.rawBody);
     } else if (opts.body !== undefined) {
       body = JSON.stringify(opts.body);
     }
@@ -79,7 +79,7 @@ export function createWorkerHarness(overrides: Partial<VaultBridgeEnv> = {}): Wo
       headers: headerRecord,
       errorCode(): string | null {
         const asRecord = parsed as Record<string, unknown> | null;
-        return asRecord && typeof asRecord.code === "string" ? (asRecord.code as string) : null;
+        return asRecord && typeof asRecord.code === "string" ? (asRecord.code) : null;
       },
     };
     return result;

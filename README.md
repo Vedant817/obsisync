@@ -71,7 +71,7 @@ Install Sealed Sync on the other device first. On the device that already has th
 Connect the other device in either way:
 
 - **Scan.** Leave the QR on the screen. Open the camera on the other device and point it at the code. Obsidian opens and joins.
-- **Type the codes.** Copy the invite id, the pairing code, and the recovery phrase. On the other device, enter them under **Or type the codes** and click **Join vault**. If the camera copies the link instead of opening Obsidian, paste it into **Pairing link** and click **Join from link**.
+- **Type the codes.** Copy the invite ID, the pairing code, and the recovery phrase. On the other device, enter them under **Or type the codes** and click **Join vault**. If the camera copies the link instead of opening Obsidian, paste it into **Pairing link** and click **Join from link**.
 
 A new note on either device shows up on the other while both are open. The status bar reads `Sealed Sync live`.
 

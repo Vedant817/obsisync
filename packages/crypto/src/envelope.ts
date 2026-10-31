@@ -6,8 +6,8 @@
  * Keep it simple: JSON envelope is transmitted; binary payload in object is raw.
  */
 import { aeadEncrypt, aeadDecrypt, CryptoError } from "./aead.js";
-import { encodeAad, AadParts, canonicalJson, concatArrays } from "./encoding.js";
-import { randomNonce, toBase64, fromBase64, randomId } from "./random.js";
+import { encodeAad, AadParts, canonicalJson } from "./encoding.js";
+import { randomNonce, toBase64, fromBase64 } from "./random.js";
 import { sha256Async } from "./aead.js";
 
 export const ENVELOPE_VERSION = 1;
@@ -53,7 +53,7 @@ export function deserializeEnvelope(payload: Uint8Array): Envelope {
     throw new CryptoError(`unsupported envelope format ${env.envelopeFormat}`);
   }
   if (env.cipher !== "AES-256-GCM") {
-    throw new CryptoError(`unsupported cipher ${env.cipher}`);
+    throw new CryptoError(`unsupported cipher ${String(env.cipher)}`);
   }
   return env;
 }

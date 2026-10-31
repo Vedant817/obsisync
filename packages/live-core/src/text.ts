@@ -57,7 +57,7 @@ export function textOps(from: string, to: string): TextOp[] {
 
 /** Edit `ytext` (which currently reads `from`) so it reads `to`. */
 export function applyTextChange(ytext: Y.Text, to: string, origin: unknown = null): boolean {
-  const from = ytext.toString();
+  const from = ytext.toJSON();
   const ops = textOps(from, to);
   if (ops.length === 0) {
     return false;

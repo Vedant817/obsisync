@@ -1,4 +1,3 @@
-import { z } from "zod";
 
 /**
  * Stable machine-readable error codes.
@@ -170,12 +169,4 @@ export function statusForCode(code: ErrorCode): number {
   }
 }
 
-/** Server responses always carry this shape on failure. */
-export const VaultBridgeErrorPayloadSchema = z.object({
-  code: z.enum(ERROR_CODES),
-  message: z.string().min(1),
-  guidance: z.string().optional(),
-  retryable: z.boolean(),
-  requestId: z.string().optional(),
-  status: z.number().optional(),
-});
+

@@ -7,6 +7,7 @@ export default defineConfig({
     // ArrayBuffer/TypedArray instanceof checks across different contexts
     // (a known source of 'not instance of ArrayBuffer' failures under vm isolation)
     pool: "forks",
+    setupFiles: ["./vitest.setup.ts"],
     testTimeout: 30_000,
     hookTimeout: 30_000,
   },

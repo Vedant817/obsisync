@@ -100,7 +100,6 @@ export async function phraseToKey(phrase: string): Promise<Uint8Array> {
     charValues.push(v);
   }
   const data = charValues.slice(0, -6);
-  const checksum = charValues.slice(-6);
   if (data.length + 6 !== charValues.length || polymod([...hrpExpand(HRP), ...charValues]) !== 1) {
     throw new Error("recovery phrase checksum failed — a character is off");
   }

@@ -174,7 +174,7 @@ export function parseJournal(raw: string): JournalParseResult {
       conflicts: data.conflicts ?? {},
       faultAttempts: data.faultAttempts ?? {},
       stats: { ...emptyJournal().stats, ...(data.stats ?? {}) },
-    } as SyncJournalData,
+    },
   };
 }
 

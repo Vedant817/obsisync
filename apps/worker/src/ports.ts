@@ -40,7 +40,7 @@ export interface D1StatementRows<T = unknown> {
  */
 export interface D1DatabaseLike {
   prepare(sql: string): D1Statement;
-  batch<T = unknown>(statements: D1Statement[]): Promise<D1StatementResult[]>;
+  batch(statements: D1Statement[]): Promise<D1StatementResult[]>;
 }
 
 export interface R2ObjectLike {

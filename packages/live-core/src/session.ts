@@ -86,8 +86,8 @@ export class LiveDocSession {
   joinedAtMs = 0;
 
   private outbox: Uint8Array[] = [];
-  private flushTimer: ReturnType<typeof setTimeout> | null = null;
-  private awarenessTimer: ReturnType<typeof setTimeout> | null = null;
+  private flushTimer: number | null = null;
+  private awarenessTimer: number | null = null;
   private readonly inFlight = new Set<Promise<void>>();
   private snapshotting: Promise<void> | null = null;
   private retryDelayMs = 0;
@@ -169,11 +169,11 @@ export class LiveDocSession {
         await page();
         continue;
       }
-      const serverText = this.text.toString();
+      const serverText = this.text.toJSON();
       if (serverText === input.diskText) {
         break;
       }
-      const baseText = baseDoc ? baseDoc.getText(TEXT_FIELD).toString() : null;
+      const baseText = baseDoc ? baseDoc.getText(TEXT_FIELD).toJSON() : null;
       const diskIsStale =
         input.diskIsRemoteCopy === true ||
         baseText === input.diskText ||
@@ -199,7 +199,7 @@ export class LiveDocSession {
     this.joinedAtMs = Date.now();
     this.doc.on("update", this.onDocUpdate);
     this.awareness.on("update", this.onAwarenessUpdate);
-    return { text: this.text.toString(), outcome, skipped };
+    return { text: this.text.toJSON(), outcome, skipped };
   }
 
   /**
@@ -208,7 +208,7 @@ export class LiveDocSession {
    */
   async replaceText(target: string): Promise<boolean> {
     for (let attempt = 0; attempt < 5; attempt++) {
-      if (this.text.toString() === target) {
+      if (this.text.toJSON() === target) {
         return false;
       }
       await this.flush();
@@ -236,14 +236,14 @@ export class LiveDocSession {
       return false;
     }
     const before = this.text.length;
-    const beforeText = before < 200_000 ? this.text.toString() : null;
+    const beforeText = before < 200_000 ? this.text.toJSON() : null;
     await this.applyEvents(delta.events);
     this.cursor = Math.max(this.cursor, delta.cursor);
     this.hasMore = delta.hasMore;
     this.eventsSinceSnapshot += delta.events.length;
     await this.applyAwareness(delta.awareness);
     this.maybeCompact();
-    return beforeText === null ? this.text.length !== before : this.text.toString() !== beforeText;
+    return beforeText === null ? this.text.length !== before : this.text.toJSON() !== beforeText;
   }
 
   /** Pull everything newer than the cursor right now (used after a failed CAS). */
@@ -302,7 +302,7 @@ export class LiveDocSession {
     if (this.flushTimer || this.closed) {
       return;
     }
-    this.flushTimer = setTimeout(() => {
+    this.flushTimer = window.setTimeout(() => {
       this.flushTimer = null;
       void this.flush().catch(() => undefined);
     }, delayMs);
@@ -320,7 +320,7 @@ export class LiveDocSession {
    */
   async flush(): Promise<void> {
     if (this.flushTimer) {
-      clearTimeout(this.flushTimer);
+      window.clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
     const mine: Promise<void>[] = [];
@@ -341,7 +341,7 @@ export class LiveDocSession {
     const results = await Promise.allSettled([...mine, ...this.inFlight]);
     const failed = results.slice(0, mine.length).find((r) => r.status === "rejected");
     if (failed) {
-      throw (failed as PromiseRejectedResult).reason;
+      throw (failed).reason;
     }
   }
 
@@ -521,7 +521,7 @@ export class LiveDocSession {
     if (this.awarenessTimer) {
       return;
     }
-    this.awarenessTimer = setTimeout(() => {
+    this.awarenessTimer = window.setTimeout(() => {
       this.awarenessTimer = null;
       void this.sendAwareness();
     }, 120);
@@ -569,11 +569,11 @@ export class LiveDocSession {
     }
     this.closed = true;
     if (this.flushTimer) {
-      clearTimeout(this.flushTimer);
+      window.clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
     if (this.awarenessTimer) {
-      clearTimeout(this.awarenessTimer);
+      window.clearTimeout(this.awarenessTimer);
       this.awarenessTimer = null;
     }
     this.doc.off("update", this.onDocUpdate);
