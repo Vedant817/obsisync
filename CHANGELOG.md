@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.2
+
+- A note deleted on another device now follows your "Deleted files" setting (system trash, Obsidian trash, or permanent) instead of being removed outright. Obsidian's `.trash` folder is never synced.
+- Works with a configuration folder other than `.obsidian`.
+- Timers work in popout windows.
+- The plugin file is smaller (263 KB, was 322 KB).
+- Needs Obsidian 1.6.6 or later.
+
 ## 0.3.1
 
 - Live edits and cursors travel over a WebSocket, so a keystroke reaches the other device in one hop instead of waiting for a poll. If the socket cannot connect, sync falls back to polling on its own.

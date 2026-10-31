@@ -1,7 +1,7 @@
 {
   "id": "obsisync",
   "name": "Sealed Sync",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "minAppVersion": "1.6.6",
   "description": "Edit notes live across your devices, with each keystroke merged as you type. Everything is encrypted on the device before it is sent.",
   "author": "Vedant Mahajan",
