@@ -1,0 +1,9 @@
+{
+  "id": "vaultbridge",
+  "name": "VaultBridge",
+  "version": "0.1.1",
+  "minAppVersion": "1.5.0",
+  "description": "End-to-end encrypted realtime sync for this vault.",
+  "author": "Vedant Mahajan",
+  "isDesktopOnly": false
+}

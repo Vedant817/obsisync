@@ -1,0 +1,14 @@
+.vaultbridge-settings p {
+  margin: 0.4em 0;
+}
+
+.vaultbridge-settings .vaultbridge-live {
+  font-weight: 600;
+}
+
+.vaultbridge-settings .vaultbridge-secret,
+.vaultbridge-settings textarea.vaultbridge-secret {
+  font-family: var(--font-monospace);
+  width: 100%;
+  white-space: pre-wrap;
+}
