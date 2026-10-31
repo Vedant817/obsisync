@@ -1,9 +1,12 @@
-/** Public sync API. Phones on any network use this address. */
-export const PRODUCTION_SERVER_URL = "https://vaultbridge-three.vercel.app";
+/** Public sync API (Cloudflare Workers). Phones on any network use this address. */
+export const PRODUCTION_SERVER_URL = "https://obsisync-api.mediclarity-voice-agent.workers.dev";
+
+/** Earlier hosted addresses. A device still set to one of them moves to the current one. */
+export const RETIRED_SERVER_URLS = ["https://vaultbridge-three.vercel.app"];
 
 export function canonicalServerUrl(value: string): string {
   const trimmed = value.trim().replace(/\/$/, "");
-  if (!trimmed) {
+  if (!trimmed || RETIRED_SERVER_URLS.includes(trimmed.toLowerCase())) {
     return PRODUCTION_SERVER_URL;
   }
   try {

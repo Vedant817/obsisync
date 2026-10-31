@@ -18,7 +18,7 @@ import { authenticate, rateLimit, clientKey, DEFAULT_RATE_LIMIT, hashSha256Hex, 
 import { ObjectService, contentObjectKey, manifestObjectKey, unavailableBucket, utcDate } from "./object-service.js";
 import { TursoBucket } from "./turso-bucket.js";
 import * as store from "./store.js";
-import { handleLiveRoute } from "./live.js";
+import { handleLiveRoute, type LiveHooks } from "./live.js";
 import { randomId } from "@vaultbridge/crypto";
 
 export interface VaultBridgeEnv {
@@ -37,6 +37,8 @@ export interface VaultBridgeEnv {
   PROTOCOL_VERSION?: string;
   RATE_LIMIT_MAX?: number;
   RATE_LIMIT_WINDOW_MS?: number;
+  /** Push relay notifications (Cloudflare Durable Object). Unset on Node. */
+  LIVE_HOOKS?: LiveHooks;
   /** Live editing polls several times a second, so it has its own bucket. */
   RATE_LIMIT_LIVE_MAX?: number;
   /**
@@ -801,7 +803,7 @@ async function route(ctx: RouteContext): Promise<Response | undefined> {
     const vaultId = vaultMatch[1]!;
     const subpath = vaultMatch[2] ?? "";
     if (subpath.startsWith("/live/")) {
-      return handleLiveRoute(ctx.env.DB, ctx.request, ctx.url, vaultId, subpath);
+      return handleLiveRoute(ctx.env.DB, ctx.request, ctx.url, vaultId, subpath, ctx.env.LIVE_HOOKS);
     }
     if (subpath === "/state") {
       return handleVaultState(ctx, vaultId);
@@ -817,7 +819,15 @@ async function route(ctx: RouteContext): Promise<Response | undefined> {
       return handleUploadPut(ctx, vaultId, uploadPut[1]!);
     }
     if (subpath === "/commits" && ctx.request.method === "POST") {
-      return handleCommit(ctx, vaultId);
+      const committed = await handleCommit(ctx, vaultId);
+      if (committed.status >= 200 && committed.status < 300) {
+        try {
+          await ctx.env.LIVE_HOOKS?.onFilesChanged?.(vaultId);
+        } catch {
+          /* devices fall back to their slow poll */
+        }
+      }
+      return committed;
     }
     const fileMatch = subpath.match(/^\/files\/([A-Za-z0-9_-]+)(\/.*)?$/);
     if (fileMatch) {

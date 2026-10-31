@@ -1,0 +1,23 @@
+# Sealed Sync API on Cloudflare Workers.
+# Secrets (not in this file): TURSO_DATABASE_URL, TURSO_AUTH_TOKEN
+#   npx wrangler secret put TURSO_DATABASE_URL
+name = "obsisync-api"
+main = "src/cf-entry.ts"
+compatibility_date = "2026-10-15"
+workers_dev = true
+account_id = "c68df66f596d539922aad2e6cc3abdd3"
+
+[vars]
+WORKER_VERSION = "0.3.1"
+PROTOCOL_VERSION = "1"
+
+[[durable_objects.bindings]]
+name = "LIVE_ROOMS"
+class_name = "LiveRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["LiveRoom"]
+
+[observability]
+enabled = true

@@ -13,6 +13,8 @@
 import type { LiveCipher } from "./cipher.js";
 import { LIVE_REMOTE, LiveDocSession, type LiveJoinInput, type LiveJoinResult } from "./session.js";
 import { LiveUnavailableError, type LiveTransport } from "./transport.js";
+import type { LivePushChannel } from "./ws.js";
+import type { LiveAwarenessWire, LiveDocDelta, LiveEventWire } from "@vaultbridge/protocol";
 
 export interface LiveDocStore {
   load(docId: string): Promise<Uint8Array | null>;
@@ -31,6 +33,11 @@ export interface LiveHubStatus {
 export interface LiveHubOptions {
   cipher: LiveCipher;
   transport: LiveTransport;
+  /**
+   * WebSocket channel. While it is connected, edits and cursors arrive pushed
+   * and the poll loop sleeps. When it drops, the poll loop takes over.
+   */
+  push?: LivePushChannel;
   store?: LiveDocStore;
   /** Server long-poll wait. */
   longPollMs?: number;
@@ -62,8 +69,11 @@ export class LiveHub {
   private pollStartedAt = 0;
   private sideRunning = false;
   private status: LiveHubStatus = { state: "idle", docs: 0, peers: 0, lastError: null };
-  private readonly opts: Required<Omit<LiveHubOptions, "store" | "user" | "onStatus" | "onRemoteChange">> &
-    Pick<LiveHubOptions, "store" | "user" | "onStatus" | "onRemoteChange">;
+  private readonly opts: Required<Omit<LiveHubOptions, "store" | "user" | "onStatus" | "onRemoteChange" | "push">> &
+    Pick<LiveHubOptions, "store" | "user" | "onStatus" | "onRemoteChange" | "push">;
+  private unlisten: (() => void) | null = null;
+  /** Pushed frames are applied one at a time, in arrival order. */
+  private pushChain: Promise<void> = Promise.resolve();
 
   constructor(options: LiveHubOptions) {
     this.opts = {
@@ -73,6 +83,61 @@ export class LiveHub {
       persistDelayMs: 1_500,
       ...options,
     };
+    const push = this.opts.push;
+    if (push) {
+      this.unlisten = push.listen({
+        onReady: () => {
+          const watches = [...this.sessions.values()]
+            .filter((s) => !s.disabledReason)
+            .map((s) => ({ docId: s.docId, after: s.cursor }));
+          push.subscribe(watches);
+          this.refreshStatus("live", null);
+          this.wake?.();
+        },
+        onDown: () => this.kick(),
+        onPage: (delta) => this.enqueue(() => this.applyPage(delta)),
+        onPush: (docId, event) => this.enqueue(() => this.applyPush(docId, event)),
+        onAwareness: (docId, entries) => this.enqueue(() => this.applyCursors(docId, entries)),
+      });
+    }
+  }
+
+  private enqueue(fn: () => Promise<void>): void {
+    this.pushChain = this.pushChain.then(fn).catch(() => undefined);
+  }
+
+  private async applyPage(delta: LiveDocDelta): Promise<void> {
+    await this.sessions.get(delta.docId)?.applyDelta(delta);
+    this.refreshStatus();
+  }
+
+  /** A pushed event moves the cursor only when nothing can sit between. */
+  private async applyPush(docId: string, event: LiveEventWire & { prev: number }): Promise<void> {
+    const session = this.sessions.get(docId);
+    if (!session) {
+      return;
+    }
+    const contiguous = event.prev <= session.cursor;
+    await session.applyDelta({
+      docId,
+      events: [event],
+      cursor: contiguous ? Math.max(session.cursor, event.seq) : session.cursor,
+      hasMore: false,
+      awareness: [],
+    });
+    if (!contiguous) {
+      // A gap (a frame lost in a reconnect). Ask the server for what we missed.
+      this.opts.push?.subscribe([{ docId, after: session.cursor }]);
+    }
+  }
+
+  private async applyCursors(docId: string, entries: LiveAwarenessWire[]): Promise<void> {
+    const session = this.sessions.get(docId);
+    if (!session) {
+      return;
+    }
+    await session.applyDelta({ docId, events: [], cursor: session.cursor, hasMore: false, awareness: entries });
+    this.refreshStatus();
   }
 
   get cipher(): LiveCipher {
@@ -123,6 +188,7 @@ export class LiveHub {
       this.sessions.set(docId, session);
       this.schedulePersist(session);
       this.refreshStatus();
+      this.opts.push?.subscribe([{ docId, after: session.cursor }]);
       this.kick();
       this.startSidePoll();
       return { session, join };
@@ -153,6 +219,7 @@ export class LiveHub {
       return;
     }
     this.sessions.delete(docId);
+    this.opts.push?.unsubscribe([docId]);
     await session.close();
     await this.persistNow(session);
     this.refreshStatus();
@@ -169,6 +236,8 @@ export class LiveHub {
   /** Flush every doc, persist state, stop the loop. */
   async stop(): Promise<void> {
     this.stopped = true;
+    this.unlisten?.();
+    this.unlisten = null;
     const all = [...this.sessions.values()];
     this.sessions.clear();
     await Promise.all(
@@ -205,6 +274,14 @@ export class LiveHub {
   private async loop(): Promise<void> {
     while (!this.stopped) {
       const list = [...this.sessions.values()].filter((s) => !s.disabledReason);
+      if (this.opts.push?.connected && list.length > 0) {
+        // Edits arrive pushed. Sleep until the socket drops.
+        this.refreshStatus("live", null);
+        await new Promise<void>((resolve) => {
+          this.wake = resolve;
+        });
+        continue;
+      }
       if (!this.active || list.length === 0) {
         if (list.length === 0) {
           this.setStatus({ state: "idle" });
@@ -253,7 +330,7 @@ export class LiveHub {
           const late = [...this.sessions.values()].filter(
             (s) => !s.disabledReason && s.joinedAtMs >= this.pollStartedAt && this.running,
           );
-          if (late.length === 0 || !this.active) {
+          if (late.length === 0 || !this.active || this.opts.push?.connected) {
             return;
           }
           await this.sleep(this.opts.sidePollMs);

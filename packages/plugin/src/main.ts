@@ -1,7 +1,7 @@
 import { Notice, Platform, Plugin, PluginSettingTab, requestUrl } from "obsidian";
 import type { HttpSender, SyncCycleOptions, SyncCycleReport, SyncEngine } from "@vaultbridge/sync-core";
 import { parseJournal } from "@vaultbridge/sync-core";
-import { HttpLiveTransport, LiveCipher, LiveHub, type LiveHubStatus } from "@vaultbridge/live-core";
+import { HttpLiveTransport, LiveCipher, LiveHub, liveSocketUrl, WsLiveTransport, type LiveHubStatus } from "@vaultbridge/live-core";
 import { LiveEditing } from "./live-editing.js";
 import { AdapterLiveStore } from "./live-store.js";
 import { ObsidianLocalVault } from "./obsidian-vault.js";
@@ -23,6 +23,9 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
   readonly plugin = this;
   private realtime: RealtimeSync | null = null;
   private poll: ReturnType<typeof setInterval> | null = null;
+  /** One WebSocket per vault: live edits, cursors, and "files changed" pushes. */
+  private channel: WsLiveTransport | null = null;
+  private lastSafetyPoll = 0;
   private status: HTMLElement | null = null;
   private engine: SyncEngine | null = null;
   private wired = false;
@@ -48,7 +51,7 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
   }
 
   override onunload(): void {
-    void this.live.detach();
+    void this.live.detach().finally(() => this.channel?.stop());
     const flushing = this.realtime?.flush();
     if (this.poll) {
       clearInterval(this.poll);
@@ -91,15 +94,27 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
         void this.showOutcome(outcome);
       });
       this.wireVault();
+      this.startChannel();
       this.registerDomEvent(document, "visibilitychange", () => {
         const visible = document.visibilityState === "visible";
         this.live.setVisible(visible);
+        if (visible) {
+          this.channel?.wake();
+        }
         if (visible && !this.settings.uploadsPaused) {
           this.realtime?.noteChange();
         }
       });
       const pollMs = Platform.isMobile && this.settings.pollMs === 1000 ? 5_000 : this.settings.pollMs;
-      this.poll = setInterval(() => this.realtime?.noteChange(), pollMs);
+      this.poll = setInterval(() => {
+        // With the socket up, the server announces new commits, so the poll
+        // is only a safety net. Without it, poll at the normal rate.
+        if (this.channel?.connected && Date.now() - this.lastSafetyPoll < SAFETY_POLL_MS) {
+          return;
+        }
+        this.lastSafetyPoll = Date.now();
+        this.realtime?.noteChange();
+      }, pollMs);
       this.registerInterval(this.poll as unknown as number);
       if (!this.settings.uploadsPaused) {
         this.realtime.noteChange();
@@ -129,15 +144,18 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
     try {
       const vmk = await unlockSettings(this.settings);
       const cipher = await LiveCipher.fromVaultKey(vmk, this.settings.vaultId);
-      const transport = new HttpLiveTransport({
-        vaultId: this.settings.vaultId,
-        token: this.settings.deviceToken,
-        sender: this.sender(),
-      });
+      const transport =
+        this.channel ??
+        new HttpLiveTransport({
+          vaultId: this.settings.vaultId,
+          token: this.settings.deviceToken,
+          sender: this.sender(),
+        });
       const store = new AdapterLiveStore(this.app.vault.adapter, `${this.manifest.dir ?? ".obsidian/plugins/obsisync"}/live`);
       const hub = new LiveHub({
         cipher,
         transport,
+        push: this.channel ?? undefined,
         store,
         longPollMs: Platform.isMobile ? 6_000 : 8_000,
         user: { name: this.deviceLabel(), color: cursorColor(this.settings.deviceId) },
@@ -151,6 +169,48 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
       this.settings.lastError = err instanceof Error ? `live editing: ${err.message}` : "live editing failed to start";
       await this.saveSettings();
     }
+  }
+
+  private startChannel(): void {
+    this.channel?.stop();
+    this.channel = null;
+    if (!this.settings.deviceToken || !this.settings.vaultId) {
+      return;
+    }
+    const channel = new WsLiveTransport({
+      url: liveSocketUrl(this.settings.serverUrl, this.settings.vaultId),
+      token: this.settings.deviceToken,
+      http: new HttpLiveTransport({
+        vaultId: this.settings.vaultId,
+        token: this.settings.deviceToken,
+        sender: this.sender(),
+      }),
+    });
+    channel.listen({
+      // Another device committed a file: pull now instead of on the next poll.
+      onFiles: () => {
+        if (!this.settings.uploadsPaused) {
+          this.realtime?.noteChange();
+        }
+      },
+      onReady: () => this.renderStatus(),
+      onDown: () => this.renderStatus(),
+    });
+    this.channel = channel;
+    channel.start();
+  }
+
+  /** Socket state for the settings page. */
+  channelSummary(): string {
+    if (!this.channel) {
+      return "Not connected.";
+    }
+    if (this.channel.fatalError) {
+      return `The server refused this device: ${this.channel.fatalError.message}`;
+    }
+    return this.channel.connected
+      ? "Connected over WebSocket. Edits and new files arrive as they happen."
+      : "Reconnecting. Sync falls back to polling until the connection is back.";
   }
 
   deviceLabel(): string {
@@ -334,6 +394,8 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
 
   private stopLoops(): void {
     void this.live.detach();
+    this.channel?.stop();
+    this.channel = null;
     this.liveStatus = null;
     this.realtime?.stop();
     this.realtime = null;
@@ -380,6 +442,9 @@ class VaultBridgeSettingTab extends PluginSettingTab {
     redraw();
   }
 }
+
+/** With the socket up, file sync still polls this often in case a push was missed. */
+const SAFETY_POLL_MS = 30_000;
 
 function cycleOptions(): SyncCycleOptions | undefined {
   if (!Platform.isMobile) {

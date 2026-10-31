@@ -2,7 +2,7 @@
 
 Sealed Sync keeps an Obsidian vault in sync across your computers and phones. A note open on two devices updates as you type, like a shared document, with each device's cursor shown. Each keystroke and each note is encrypted on the device before it is uploaded. Sync runs on its own. There is no Sync button.
 
-The hosted API is `https://vaultbridge-three.vercel.app`. A phone on mobile data uses that same address. The computer that created the vault does not have to stay on, and the other device does not have to be on the same Wi-Fi.
+The hosted API is `https://obsisync-api.mediclarity-voice-agent.workers.dev`, on Cloudflare Workers. A phone on mobile data uses that same address. Devices set to the earlier address move to this one on their own. The computer that created the vault does not have to stay on, and the other device does not have to be on the same Wi-Fi.
 
 Plugin id: `obsisync`. Display name: Sealed Sync. Author: Vedant Mahajan. License: MIT.
 
@@ -22,7 +22,7 @@ People usually pick one of four ways to sync a vault. Each one is good at someth
 | How sync starts | Automatic. Open notes update as you type. Other notes sync about once a second on desktop, about every five seconds on mobile. | Automatic, in the official app. | Near real time once the server is configured. | On a schedule, or when you run it. | Continuous, while both devices are online together. |
 | A new phone | Install the plugin, then scan a QR or type three values. | Sign in to your Obsidian account. | Install the plugin, then connect it to your server. | Install the plugin, then connect your storage account. | Pair the devices on the network. There is no official iOS app. |
 | Setup you avoid | No Tailscale, no copying `main.js` onto the phone, no second sync button. | No server to run. | No hosted account. | You reuse storage you already pay for. | No account and no central copy. |
-| Where this one stops | One request can be about 4.5 MB on the current host. A normal note fits. A large attachment can fail. Version history is per note on the server, not the official history viewer. | Vault count, storage, and file size follow the plan. Standard's max file size is 5 MB. | You patch, back up, and secure the server. | Conflicts are easier to hit because sync is not continuous. | Both devices must be reachable. iOS needs a third-party app. |
+| Where this one stops | A single attachment is limited to 25 MB. Version history is per note on the server, not the official history viewer. | Vault count, storage, and file size follow the plan. Standard's max file size is 5 MB. | You patch, back up, and secure the server. | Conflicts are easier to hit because sync is not continuous. | Both devices must be reachable. iOS needs a third-party app. |
 
 Use Sealed Sync when you want encrypted realtime sync without running a database and without an Obsidian Sync subscription. Use Obsidian Sync when you want the official app, version history, and support. Use LiveSync or Remotely Save when you want the ciphertext in an account you already control. Use Syncthing when every device can see the others and you do not want a server at all.
 
@@ -43,7 +43,7 @@ Turn live editing off under **Live editing** in settings to sync open notes as w
 
 ## Network
 
-Sealed Sync sends ciphertext and sync metadata to `https://vaultbridge-three.vercel.app`. That server stores them in Turso. While a note is open, the plugin keeps one request open to that server to receive live edits and cursors. File names travel inside the encrypted manifest. The vault key stays on your devices. A recovery phrase unwraps it.
+Sealed Sync sends ciphertext and sync metadata to `https://obsisync-api.mediclarity-voice-agent.workers.dev`. That server stores them in Turso. While Obsidian is open, the plugin keeps one WebSocket open to that server. Live edits, cursors, and a short "another device saved a file" notice arrive over it. If the WebSocket cannot connect, the plugin falls back to polling over HTTPS. File names travel inside the encrypted manifest. The vault key stays on your devices. A recovery phrase unwraps it.
 
 The hosted service is required for devices to see each other's changes, unless you point the plugin at your own server. The plugin does not sell a subscription and it does not add an account login. The pairing QR contains the recovery phrase, so keep that screen private.
 
@@ -87,7 +87,7 @@ If the same note is open on both devices, edits merge live as you type. If it wa
 
 ## Limits
 
-One request can be about 4.5 MB. A normal note fits. A very large attachment can fail until the API moves to a host with a higher body limit.
+A single attachment can be up to 25 MB. Notes over 1 MB, and files that are not Markdown or text, sync as whole files instead of live.
 
 ## Repository
 
@@ -101,7 +101,7 @@ This repository is the plugin and the sync API.
 | `packages/sync-core` | Scan, reconcile, push, and conflict handling. |
 | `packages/live-core` | Live editing: the CRDT document, sealing, and the poll loop. |
 | `apps/worker` | Node API. Journal and ciphertext are both in Turso. |
-| `api/sync.mjs` | Built Vercel function. Do not edit it by hand. |
+| `apps/worker/wrangler.toml` | Cloudflare Worker and the live-room Durable Object. Pushing to `main` deploys it. |
 | `public` | Small page for the hosted API. Health is `/v1/health`. |
 | `tests` | Two-device tests against an in-memory server. |
 | `versions.json` | Plugin version to minimum Obsidian version. |
@@ -119,7 +119,9 @@ npm run build:worker
 
 `npm run qa` typechecks, runs the tests, and builds. The plugin build writes `packages/plugin/main.js`. That file is gitignored here. A GitHub release of the plugin carries `main.js`, `manifest.json`, and `styles.css` as separate files.
 
-To self-host the API, build the `Dockerfile` and set `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `HOST=0.0.0.0`, and `PORT`. Put that server's HTTPS address in the plugin. Reload Obsidian after the change.
+The hosted API deploys from `.github/workflows/deploy-api.yml` on every push to `main` that changes it. The workflow needs the `CLOUDFLARE_API_TOKEN` repository secret. The Worker needs `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` as Worker secrets.
+
+To self-host the API, build the `Dockerfile` and set `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `HOST=0.0.0.0`, and `PORT`. Put that server's HTTPS address in the plugin. Reload Obsidian after the change. The Node server has no WebSocket room, so live editing there runs over HTTPS polling.
 
 Pairing QR codes use [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) (MIT).
 

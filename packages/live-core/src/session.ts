@@ -340,7 +340,8 @@ export class LiveDocSession {
           // A paste too big for one update: a snapshot carries it instead.
           this.needsSnapshot = true;
         } else {
-          await this.opts.transport.append(this.docId, { kind: "u", payload });
+          const res = await this.opts.transport.append(this.docId, { kind: "u", payload });
+          this.advancePastOwn(res);
           this.eventsSinceSnapshot++;
           if (this.eventsSinceSnapshot >= this.opts.compactAfterEvents && this.outbox.length === 0) {
             this.needsSnapshot = true;
@@ -408,6 +409,17 @@ export class LiveDocSession {
     return true;
   }
 
+  /**
+   * Our own event is in the doc already. If nothing sits between the cursor
+   * and it, the cursor can move past it (fewer events to re-read, and
+   * compaction can cover it).
+   */
+  private advancePastOwn(res: { seq: number | null; prev?: number | null } | undefined): void {
+    if (res && res.seq !== null && typeof res.prev === "number" && res.prev <= this.cursor) {
+      this.cursor = Math.max(this.cursor, res.seq);
+    }
+  }
+
   private maybeCompact(): void {
     if (this.eventsSinceSnapshot >= this.opts.compactAfterEvents && this.outbox.length === 0 && !this.flushing) {
       this.needsSnapshot = true;
@@ -435,7 +447,8 @@ export class LiveDocSession {
       this.disabledReason = "this note is too large for live editing";
       return;
     }
-    await this.opts.transport.append(this.docId, { kind: "s", payload, replaceUpTo: this.cursor });
+    const res = await this.opts.transport.append(this.docId, { kind: "s", payload, replaceUpTo: this.cursor });
+    this.advancePastOwn(res);
     this.needsSnapshot = false;
     this.eventsSinceSnapshot = 1;
   }
@@ -509,6 +522,16 @@ export class LiveDocSession {
       await this.flush();
     } catch {
       /* unsent edits stay in the persisted state and go out on the next join */
+    }
+    if (this.awareness.getLocalState() !== null) {
+      // Tell peers right away that this cursor is gone.
+      try {
+        this.awareness.setLocalState(null);
+        const bytes = encodeAwarenessUpdate(this.awareness, [this.doc.clientID]);
+        await this.opts.transport.setAwareness(this.docId, await this.opts.cipher.seal(this.docId, "a", bytes));
+      } catch {
+        /* peers drop the cursor after the TTL */
+      }
     }
     this.closed = true;
     if (this.flushTimer) {

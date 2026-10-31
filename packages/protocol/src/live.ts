@@ -12,7 +12,7 @@ export type LiveEventKind = "u" | "s";
 export const LIVE_LIMITS = {
   /** Sealed payload ceiling for an incremental update batch (base64url chars). */
   maxUpdateChars: 700_000,
-  /** Sealed payload ceiling for a snapshot (base64url chars). Fits Vercel's 4.5 MB body. */
+  /** Sealed payload ceiling for a snapshot (base64url chars). Sent over HTTP, never over the socket. */
   maxSnapshotChars: 3_000_000,
   /** Sealed awareness (cursor) payload ceiling. */
   maxAwarenessChars: 8_000,
@@ -74,9 +74,38 @@ export interface LiveAppendResponse {
   applied: boolean;
   seq: number | null;
   head: number;
+  /** Newest event seq below `seq`. A cursor at or past it may move to `seq`. */
+  prev?: number | null;
 }
 
 export interface LiveAwarenessRequest {
   /** null removes this device's cursor (editor closed). */
   payload: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// WebSocket channel (one socket per device per vault)
+// ---------------------------------------------------------------------------
+
+/** Text frames larger than this go over HTTP instead (Cloudflare caps frames at 1 MiB). */
+export const LIVE_WS_MAX_FRAME_CHARS = 900_000;
+
+export type LiveClientMessage =
+  | { t: "auth"; token: string; protocol: number }
+  | { t: "sub"; docs: { docId: string; after: number }[] }
+  | { t: "unsub"; docIds: string[] }
+  | ({ t: "append"; id: number; docId: string } & LiveAppendRequest)
+  | { t: "aw"; docId: string; payload: string | null };
+
+export type LiveServerMessage =
+  | { t: "ready"; deviceId: string }
+  /** Catch-up page read from the log after a `sub`. Same cursor rules as a poll. */
+  | ({ t: "page" } & LiveDocDelta)
+  /** Someone appended. Advance the cursor to `event.seq` only if `event.prev` <= cursor. */
+  | { t: "push"; docId: string; event: LiveEventWire & { prev: number } }
+  | { t: "aw"; docId: string; entries: LiveAwarenessWire[] }
+  | ({ t: "ack"; id: number } & LiveAppendResponse)
+  | { t: "nack"; id: number; status: number; code: string; message: string }
+  /** A file-sync commit landed in this vault. */
+  | { t: "files" }
+  | { t: "error"; status: number; code: string; message: string };

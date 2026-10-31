@@ -33,6 +33,7 @@ export interface SettingsHost {
   setDeviceName(name: string): Promise<void>;
   deviceLabel(): string;
   liveSummary(): string;
+  channelSummary(): string;
 }
 
 interface DeviceWire {
@@ -63,7 +64,7 @@ export function renderSettings(container: HTMLElement, host: SettingsHost, redra
         ? "This computer is signed in to your vault. Paste the recovery phrase below to unlock it and to show a pairing QR."
         : host.settings.uploadsPaused
           ? "Sync is paused. Turn Pause sync off when you want notes to move again. You can still create a pairing code."
-          : "Realtime sync is on. A note open on two devices updates as you type, with each device's cursor shown. Other notes sync on their own about once a second.",
+          : "Realtime sync is on. A note open on two devices updates as you type, with each device's cursor shown. Other notes sync as soon as another device saves them.",
   });
 
   const address = new Setting(container)
@@ -263,6 +264,7 @@ function renderPause(container: HTMLElement, host: SettingsHost): void {
 function renderLive(container: HTMLElement, host: SettingsHost, redraw: () => void): void {
   container.createEl("h3", { text: "Live editing" });
   container.createEl("p", { text: host.liveSummary() });
+  container.createEl("p", { text: host.channelSummary() });
   new Setting(container)
     .setName("Edit open notes live")
     .setDesc(

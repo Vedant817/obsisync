@@ -106,7 +106,7 @@ export function rateLimit(key: string, options: RateLimitOptions = DEFAULT_RATE_
 
 /**
  * Rate-limit key. A bearer token identifies one device, so each device gets
- * its own bucket. Without one, fall back to the client address. Vercel and
+ * its own bucket. Without one, fall back to the client address. Cloudflare and
  * most proxies send x-forwarded-for, not cf-connecting-ip; keying on
  * cf-connecting-ip alone put every client behind one shared "local" bucket.
  */

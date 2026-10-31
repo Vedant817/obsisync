@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+
+- Live edits and cursors travel over a WebSocket, so a keystroke reaches the other device in one hop instead of waiting for a poll. If the socket cannot connect, sync falls back to polling on its own.
+- A note saved on another device starts downloading as soon as it is saved. Polling for new files drops to every 30 seconds while the socket is up.
+- The sync API moved to Cloudflare. Devices set to the previous address switch on their own. Nothing to re-pair.
+- Closing a note removes your cursor from the other device right away.
+
 ## 0.3.0
 
 - Live editing. A note open on two devices updates as you type, like a shared document. Edits made on both devices at the same time merge letter by letter instead of one replacing the other.

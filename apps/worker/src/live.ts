@@ -1,7 +1,7 @@
 /**
  * Live editing relay (Sealed Sync Live).
  *
- * Stateless HTTP so it runs on Vercel functions as well as the Node server:
+ * Stateless HTTP, used by the Cloudflare Worker, its live rooms, and the Node server:
  * - an append-only, per-document log of sealed CRDT updates with an optional
  *   compare-and-swap on the doc head (seeding and reconcile edits),
  * - client-driven compaction (`kind: "s"` + `replaceUpTo`),
@@ -54,7 +54,7 @@ export const LIVE_SCHEMA = [
  * are created on first use so a deploy needs no manual migration step.
  */
 const ready = new WeakSet<object>();
-async function ensureLiveSchema(db: D1DatabaseLike): Promise<void> {
+export async function ensureLiveSchema(db: D1DatabaseLike): Promise<void> {
   if (ready.has(db)) {
     return;
   }
@@ -79,13 +79,27 @@ async function readJson(request: Request): Promise<unknown> {
   }
 }
 
-function checkDocId(docId: string): void {
+export function checkDocId(docId: string): void {
   if (!LIVE_DOC_ID_PATTERN.test(docId)) {
     throw new VaultBridgeError("INVALID_REQUEST", "malformed live document id");
   }
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** An event as relayed to subscribers, with the seq just below it for gap detection. */
+export type LivePushedEvent = LiveEventWire & { prev: number };
+
+/**
+ * Called after an HTTP append or cursor update, so a push relay (the
+ * Cloudflare Durable Object) can forward it to connected sockets.
+ */
+export interface LiveHooks {
+  onAppend?(vaultId: string, docId: string, event: LivePushedEvent): Promise<void> | void;
+  onAwareness?(vaultId: string, docId: string, entry: LiveAwarenessWire): Promise<void> | void;
+  /** A file-sync commit landed. Connected devices can pull now instead of polling. */
+  onFilesChanged?(vaultId: string): Promise<void> | void;
+}
 
 /** Returns undefined when `subpath` is not a live route. */
 export async function handleLiveRoute(
@@ -94,6 +108,7 @@ export async function handleLiveRoute(
   url: URL,
   vaultId: string,
   subpath: string,
+  hooks: LiveHooks = {},
 ): Promise<Response | undefined> {
   if (!subpath.startsWith("/live/")) {
     return undefined;
@@ -113,12 +128,28 @@ export async function handleLiveRoute(
     const docId = docMatch[1]!;
     checkDocId(docId);
     if (docMatch[2] === "events") {
-      return json(await append(db, auth, docId, await readJson(request)));
+      const result = await liveAppend(db, vaultId, auth.device.device_id, docId, await readJson(request));
+      if (result.event) {
+        await notifyQuietly(() => hooks.onAppend?.(vaultId, docId, result.event!));
+      }
+      const { event: _event, ...wire } = result;
+      return json(wire);
     }
-    await setAwareness(db, auth, docId, await readJson(request));
+    const entry = await liveSetAwareness(db, vaultId, auth.device.device_id, docId, await readJson(request));
+    if (entry) {
+      await notifyQuietly(() => hooks.onAwareness?.(vaultId, docId, entry));
+    }
     return json({ ok: true });
   }
   return undefined;
+}
+
+async function notifyQuietly(fn: () => Promise<void> | void | undefined): Promise<void> {
+  try {
+    await fn();
+  } catch {
+    /* the push relay is best effort; pollers still read the log */
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -134,7 +165,13 @@ const appendSchema = z
   })
   .strict();
 
-async function append(db: D1DatabaseLike, auth: AuthContext, docId: string, raw: unknown): Promise<LiveAppendResponse> {
+export async function liveAppend(
+  db: D1DatabaseLike,
+  vaultId: string,
+  deviceId: string,
+  docId: string,
+  raw: unknown,
+): Promise<LiveAppendResponse & { event?: LivePushedEvent }> {
   const body = appendSchema.parse(raw);
   const limit = body.kind === "s" ? LIVE_LIMITS.maxSnapshotChars : LIVE_LIMITS.maxUpdateChars;
   if (body.payload.length > limit) {
@@ -146,8 +183,6 @@ async function append(db: D1DatabaseLike, auth: AuthContext, docId: string, raw:
   if (body.replaceUpTo !== undefined && body.ifHead !== undefined) {
     throw new VaultBridgeError("INVALID_REQUEST", "a snapshot cannot also be conditional");
   }
-  const vaultId = auth.vault.vault_id;
-  const deviceId = auth.device.device_id;
   const now = new Date().toISOString();
   const insert =
     body.ifHead === undefined
@@ -174,14 +209,25 @@ async function append(db: D1DatabaseLike, auth: AuthContext, docId: string, raw:
   const results = await db.batch(statements);
   const inserted = results[0]!;
   const applied = inserted.meta.changes > 0;
-  const headRow = await db
-    .prepare("SELECT COALESCE(MAX(seq), 0) AS head FROM live_events WHERE vault_id = ?1 AND doc_id = ?2")
-    .bind(vaultId, docId)
-    .first<{ head: number }>();
+  const seq = applied ? Number(inserted.meta.lastSeq ?? 0) || null : null;
+  // `prev` is the newest event below ours. A reader whose cursor is at or
+  // past it has everything before this event, so it may advance to `seq`.
+  const row = await db
+    .prepare(
+      `SELECT COALESCE(MAX(seq), 0) AS head, COALESCE(MAX(CASE WHEN seq < ?3 THEN seq END), 0) AS prev
+       FROM live_events WHERE vault_id = ?1 AND doc_id = ?2`,
+    )
+    .bind(vaultId, docId, seq ?? 0)
+    .first<{ head: number; prev: number }>();
+  const prev = seq === null ? null : Number(row?.prev ?? 0);
   return {
     applied,
-    seq: applied ? Number(inserted.meta.lastSeq ?? 0) || null : null,
-    head: Number(headRow?.head ?? 0),
+    seq,
+    head: Number(row?.head ?? 0),
+    prev,
+    ...(seq !== null && prev !== null
+      ? { event: { seq, prev, kind: body.kind, deviceId, payload: body.payload } }
+      : {}),
   };
 }
 
@@ -193,17 +239,21 @@ const awarenessSchema = z
   .object({ payload: z.string().min(1).max(LIVE_LIMITS.maxAwarenessChars).regex(PAYLOAD_PATTERN).nullable() })
   .strict();
 
-async function setAwareness(db: D1DatabaseLike, auth: AuthContext, docId: string, raw: unknown): Promise<void> {
+export async function liveSetAwareness(
+  db: D1DatabaseLike,
+  vaultId: string,
+  deviceId: string,
+  docId: string,
+  raw: unknown,
+): Promise<LiveAwarenessWire | null> {
   const body = awarenessSchema.parse(raw);
-  const vaultId = auth.vault.vault_id;
-  const deviceId = auth.device.device_id;
   const now = Date.now();
   if (body.payload === null) {
     await db
       .prepare("DELETE FROM live_awareness WHERE vault_id = ?1 AND doc_id = ?2 AND device_id = ?3")
       .bind(vaultId, docId, deviceId)
       .run();
-    return;
+    return null;
   }
   await db.batch([
     db
@@ -216,13 +266,14 @@ async function setAwareness(db: D1DatabaseLike, auth: AuthContext, docId: string
       .prepare("DELETE FROM live_awareness WHERE vault_id = ?1 AND updated_ms < ?2")
       .bind(vaultId, now - LIVE_LIMITS.awarenessTtlMs * 4),
   ]);
+  return { deviceId, payload: body.payload, updatedMs: now };
 }
 
 // ---------------------------------------------------------------------------
 // Poll
 // ---------------------------------------------------------------------------
 
-interface Watch {
+export interface Watch {
   docId: string;
   after: number;
 }
@@ -328,7 +379,7 @@ async function probe(
   return changed;
 }
 
-async function readEvents(
+export async function readEvents(
   db: D1DatabaseLike,
   vaultId: string,
   me: string,
@@ -360,7 +411,7 @@ async function readEvents(
   };
 }
 
-async function readAwareness(
+export async function readAwareness(
   db: D1DatabaseLike,
   vaultId: string,
   me: string,
