@@ -48,6 +48,10 @@ export interface VaultBridgeSettings {
   inviteId: string;
   inviteCode: string;
   inviteExpiresAt: string;
+  /** Character-level realtime editing of open notes. */
+  liveEditing: boolean;
+  /** Shown next to this device's cursor on other devices. Empty = Desktop/Phone. */
+  deviceName: string;
 }
 
 export function emptySettings(serverUrl: string = PRODUCTION_SERVER_URL): VaultBridgeSettings {
@@ -72,5 +76,18 @@ export function emptySettings(serverUrl: string = PRODUCTION_SERVER_URL): VaultB
     inviteId: "",
     inviteCode: "",
     inviteExpiresAt: "",
+    liveEditing: true,
+    deviceName: "",
   };
+}
+
+const CURSOR_COLORS = ["#e8590c", "#2f9e44", "#1971c2", "#9c36b5", "#c2255c", "#0c8599", "#f08c00", "#5f3dc4"];
+
+/** Stable cursor colour for a device. */
+export function cursorColor(deviceId: string): string {
+  let h = 0;
+  for (let i = 0; i < deviceId.length; i++) {
+    h = (h * 31 + deviceId.charCodeAt(i)) >>> 0;
+  }
+  return CURSOR_COLORS[h % CURSOR_COLORS.length]!;
 }

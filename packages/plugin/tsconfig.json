@@ -9,6 +9,7 @@
   "references": [
     { "path": "../protocol" },
     { "path": "../crypto" },
-    { "path": "../sync-core" }
+    { "path": "../sync-core" },
+    { "path": "../live-core" }
   ]
 }

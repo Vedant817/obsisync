@@ -8,7 +8,15 @@ import { TFile, TFolder, type Vault } from "obsidian";
  * Conflict names are repaired by the engine.
  */
 export class ObsidianLocalVault implements LocalVault {
-  constructor(private readonly vault: Vault) {}
+  /**
+   * `beforeWrite` may take over a download (a note open in live editing) and
+   * return false so the editor is not overwritten. File sync then sees the
+   * live text on disk and uploads it as the later edit.
+   */
+  constructor(
+    private readonly vault: Vault,
+    private readonly beforeWrite?: (path: string, bytes: Uint8Array) => Promise<boolean>,
+  ) {}
 
   async listFiles(): Promise<LocalFileMeta[]> {
     const out: LocalFileMeta[] = [];
@@ -27,8 +35,11 @@ export class ObsidianLocalVault implements LocalVault {
   }
 
   async writeFile(rel: string, bytes: Uint8Array): Promise<void> {
-    const body = copyBytes(bytes);
     const existing = this.vault.getAbstractFileByPath(rel);
+    if (this.beforeWrite && !(await this.beforeWrite(rel, bytes))) {
+      return;
+    }
+    const body = copyBytes(bytes);
     if (existing instanceof TFile) {
       await this.vault.modifyBinary(existing, body);
       return;

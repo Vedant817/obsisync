@@ -6,7 +6,22 @@ import process from "node:process";
 const prod = process.argv[2] === "production";
 const shared = {
   bundle: true,
-  external: ["obsidian", "electron", ...builtins],
+  external: [
+    "obsidian",
+    "electron",
+    "@codemirror/autocomplete",
+    "@codemirror/collab",
+    "@codemirror/commands",
+    "@codemirror/language",
+    "@codemirror/lint",
+    "@codemirror/search",
+    "@codemirror/state",
+    "@codemirror/view",
+    "@lezer/common",
+    "@lezer/highlight",
+    "@lezer/lr",
+    ...builtins,
+  ],
   format: "cjs",
   target: "es2022",
   logLevel: "info",

@@ -1,8 +1,12 @@
 import { Notice, Platform, Plugin, PluginSettingTab, requestUrl } from "obsidian";
 import type { HttpSender, SyncCycleOptions, SyncCycleReport, SyncEngine } from "@vaultbridge/sync-core";
+import { parseJournal } from "@vaultbridge/sync-core";
+import { HttpLiveTransport, LiveCipher, LiveHub, type LiveHubStatus } from "@vaultbridge/live-core";
+import { LiveEditing } from "./live-editing.js";
+import { AdapterLiveStore } from "./live-store.js";
 import { ObsidianLocalVault } from "./obsidian-vault.js";
 import { RealtimeSync, type RealtimeOutcome } from "./realtime.js";
-import { createInvitation, ensureDevice, joinWithInvitation, openEngine } from "./session.js";
+import { createInvitation, ensureDevice, joinWithInvitation, openEngine, unlockSettings } from "./session.js";
 import {
   conflictsFromJournal,
   filesFromJournal,
@@ -12,7 +16,7 @@ import {
   type TrackedFile,
 } from "./settings-tab.js";
 import { parsePairingParams, type PairingPayload } from "./pairing-link.js";
-import { canonicalServerUrl, emptySettings, type VaultBridgeSettings } from "./settings.js";
+import { canonicalServerUrl, cursorColor, emptySettings, type VaultBridgeSettings } from "./settings.js";
 
 export default class VaultBridgePlugin extends Plugin implements SettingsHost {
   override settings: VaultBridgeSettings = emptySettings();
@@ -22,6 +26,10 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
   private status: HTMLElement | null = null;
   private engine: SyncEngine | null = null;
   private wired = false;
+  private readonly live = new LiveEditing({ plugin: this, syncedHash: (path) => this.syncedHash(path) });
+  private liveStatus: LiveHubStatus | null = null;
+  private baseStatus = "";
+  private journalCache: { json: string; hashes: Map<string, string> } | null = null;
 
   override async onload(): Promise<void> {
     this.status = this.addStatusBarItem();
@@ -40,6 +48,7 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
   }
 
   override onunload(): void {
+    void this.live.detach();
     const flushing = this.realtime?.flush();
     if (this.poll) {
       clearInterval(this.poll);
@@ -65,7 +74,8 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
         this.setStatus("Sealed Sync live · locked");
         return;
       }
-      const engine = await openEngine(new ObsidianLocalVault(this.app.vault), this.settings, sender, async (next) => {
+      const vault = new ObsidianLocalVault(this.app.vault, (path, bytes) => this.live.beforeSyncWrite(path, bytes));
+      const engine = await openEngine(vault, this.settings, sender, async (next) => {
         this.settings = next;
         await this.saveSettings();
       });
@@ -82,7 +92,9 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
       });
       this.wireVault();
       this.registerDomEvent(document, "visibilitychange", () => {
-        if (document.visibilityState === "visible" && !this.settings.uploadsPaused) {
+        const visible = document.visibilityState === "visible";
+        this.live.setVisible(visible);
+        if (visible && !this.settings.uploadsPaused) {
           this.realtime?.noteChange();
         }
       });
@@ -93,6 +105,7 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
         this.realtime.noteChange();
       }
       this.setStatus(this.settings.uploadsPaused ? "Sealed Sync live · paused" : "Sealed Sync live");
+      await this.startLiveEditing();
       if (officialSyncEnabled(this.app)) {
         new Notice("Sealed Sync is syncing this vault in realtime. Obsidian Sync is also enabled. Use one sync service so they do not overwrite each other.");
       }
@@ -103,6 +116,102 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
       this.setStatus("Sealed Sync live · offline");
       new Notice(`Sealed Sync: ${message}`);
     }
+  }
+
+  /** Character-level live editing of open notes. File sync keeps running beside it. */
+  private async startLiveEditing(): Promise<void> {
+    await this.live.detach();
+    this.liveStatus = null;
+    if (!this.settings.liveEditing || this.settings.uploadsPaused || !this.settings.deviceToken) {
+      this.renderStatus();
+      return;
+    }
+    try {
+      const vmk = await unlockSettings(this.settings);
+      const cipher = await LiveCipher.fromVaultKey(vmk, this.settings.vaultId);
+      const transport = new HttpLiveTransport({
+        vaultId: this.settings.vaultId,
+        token: this.settings.deviceToken,
+        sender: this.sender(),
+      });
+      const store = new AdapterLiveStore(this.app.vault.adapter, `${this.manifest.dir ?? ".obsidian/plugins/obsisync"}/live`);
+      const hub = new LiveHub({
+        cipher,
+        transport,
+        store,
+        longPollMs: Platform.isMobile ? 6_000 : 8_000,
+        user: { name: this.deviceLabel(), color: cursorColor(this.settings.deviceId) },
+        onStatus: (status) => {
+          this.liveStatus = status;
+          this.renderStatus();
+        },
+      });
+      await this.live.attach(hub, store);
+    } catch (err) {
+      this.settings.lastError = err instanceof Error ? `live editing: ${err.message}` : "live editing failed to start";
+      await this.saveSettings();
+    }
+  }
+
+  deviceLabel(): string {
+    return this.settings.deviceName.trim() || (Platform.isMobile ? "Phone" : "Desktop");
+  }
+
+  async setLiveEditing(on: boolean): Promise<void> {
+    this.settings.liveEditing = on;
+    await this.saveSettings();
+    if (this.engine) {
+      await this.startLiveEditing();
+    }
+  }
+
+  async setDeviceName(name: string): Promise<void> {
+    this.settings.deviceName = name.trim().slice(0, 40);
+    await this.saveSettings();
+    for (const session of this.live.hub?.openSessions ?? []) {
+      session.setUser(this.deviceLabel(), cursorColor(this.settings.deviceId));
+    }
+  }
+
+  liveSummary(): string {
+    const status = this.liveStatus;
+    if (!this.settings.liveEditing) {
+      return "Live editing is off. Open notes still sync as whole files.";
+    }
+    if (!status) {
+      return "Live editing starts when sync starts.";
+    }
+    if (status.state === "offline") {
+      return `Live editing is offline and retrying. ${status.lastError ?? ""}`.trim();
+    }
+    if (status.state === "stopped") {
+      return `Live editing stopped. ${status.lastError ?? ""}`.trim();
+    }
+    if (status.docs === 0) {
+      return "Live editing is ready. Open a note to edit it live.";
+    }
+    const others = status.peers === 1 ? "1 other device" : `${status.peers} other devices`;
+    return status.peers > 0
+      ? `Editing live with ${others}.`
+      : `${status.docs === 1 ? "1 note is" : `${status.docs} notes are`} open live. No other device has them open.`;
+  }
+
+  /** sha256 of the note as file sync last synced it. */
+  private syncedHash(path: string): string | null {
+    const json = this.settings.journalJson;
+    if (!this.journalCache || this.journalCache.json !== json) {
+      const hashes = new Map<string, string>();
+      const parsed = json ? parseJournal(json) : null;
+      if (parsed && parsed.ok) {
+        for (const file of Object.values(parsed.journal.files)) {
+          if (file.plaintextSha256 && !file.supersededBy && !file.deletedLocally) {
+            hashes.set(file.localPath, file.plaintextSha256);
+          }
+        }
+      }
+      this.journalCache = { json, hashes };
+    }
+    return this.journalCache.hashes.get(path) ?? null;
   }
 
   private async joinFromScan(params: Record<string, string>): Promise<void> {
@@ -149,12 +258,15 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
     }
     if (paused) {
       await this.engine.pause("uploads paused");
+      await this.live.detach();
+      this.liveStatus = null;
       this.setStatus("Sealed Sync live · paused");
       return;
     }
     await this.engine.resume();
     this.realtime?.noteChange();
     this.setStatus("Sealed Sync live");
+    await this.startLiveEditing();
   }
 
   async resolveConflict(fileId: string, choice: "local" | "remote"): Promise<void> {
@@ -210,10 +322,19 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
   }
 
   private setStatus(text: string): void {
-    this.status?.setText(text);
+    this.baseStatus = text;
+    this.renderStatus();
+  }
+
+  private renderStatus(): void {
+    const peers = this.liveStatus?.peers ?? 0;
+    const suffix = peers > 0 ? ` · ${peers} editing` : "";
+    this.status?.setText(`${this.baseStatus}${suffix}`);
   }
 
   private stopLoops(): void {
+    void this.live.detach();
+    this.liveStatus = null;
     this.realtime?.stop();
     this.realtime = null;
     if (this.poll) {

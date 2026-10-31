@@ -122,6 +122,7 @@ export class LiveDocSession {
           break;
         }
         const applied = await this.applyEvents(delta.events);
+        await this.applyAwareness(delta.awareness);
         skipped += applied.skipped;
         loaded += delta.events.length;
         this.cursor = Math.max(this.cursor, delta.cursor);
@@ -236,14 +237,7 @@ export class LiveDocSession {
     this.cursor = Math.max(this.cursor, delta.cursor);
     this.hasMore = delta.hasMore;
     this.eventsSinceSnapshot += delta.events.length;
-    for (const entry of delta.awareness) {
-      try {
-        const bytes = await this.opts.cipher.open(this.docId, "a", entry.payload);
-        applyAwarenessUpdate(this.awareness, bytes, LIVE_REMOTE);
-      } catch {
-        /* a cursor that cannot be opened is dropped */
-      }
-    }
+    await this.applyAwareness(delta.awareness);
     this.maybeCompact();
     return beforeText === null ? this.text.length !== before : this.text.toString() !== beforeText;
   }
@@ -258,6 +252,17 @@ export class LiveDocSession {
       }
       await this.applyDelta(delta);
     } while (this.hasMore);
+  }
+
+  private async applyAwareness(entries: LiveDocDelta["awareness"]): Promise<void> {
+    for (const entry of entries) {
+      try {
+        const bytes = await this.opts.cipher.open(this.docId, "a", entry.payload);
+        applyAwarenessUpdate(this.awareness, bytes, LIVE_REMOTE);
+      } catch {
+        /* a cursor that cannot be opened is dropped */
+      }
+    }
   }
 
   private async applyEvents(events: LiveEventWire[]): Promise<{ skipped: number }> {

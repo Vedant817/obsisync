@@ -12,11 +12,17 @@
   },
   "dependencies": {
     "@vaultbridge/crypto": "*",
+    "@vaultbridge/live-core": "*",
     "@vaultbridge/protocol": "*",
     "@vaultbridge/sync-core": "*",
-    "qrcode-generator": "^1.4.4"
+    "qrcode-generator": "^1.4.4",
+    "y-codemirror.next": "^0.3.6",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.33"
   },
   "devDependencies": {
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.13",
     "builtin-modules": "^4.0.0",
     "esbuild": "^0.24.2",
     "obsidian": "^1.7.2"

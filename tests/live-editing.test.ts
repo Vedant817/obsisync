@@ -427,6 +427,11 @@ describe("live hub", () => {
       expect(remote?.user?.name).toBe("Laptop");
 
       await eventually(() => storeA.states.has(a.session.docId));
+
+      // A cursor sitting still must not make the long poll return at once.
+      const before = hubs[1]!.pollCount;
+      await new Promise((r) => setTimeout(r, 1_600));
+      expect(hubs[1]!.pollCount - before).toBeLessThanOrEqual(3);
     } finally {
       await Promise.all(hubs.map((h) => h.stop()));
     }
@@ -446,6 +451,20 @@ describe("live hub", () => {
       expect(again.session.text.toString()).toBe("v1 edited");
     } finally {
       await hub.stop();
+    }
+  });
+
+  it("a device opening a note sees cursors that are already there", async () => {
+    const { devices } = await setup();
+    const hubA = new LiveHub({ cipher: devices[0]!.cipher, transport: devices[0]!.transport, longPollMs: 500, user: { name: "Laptop", color: "#f00" } });
+    const hubB = new LiveHub({ cipher: devices[1]!.cipher, transport: devices[1]!.transport, longPollMs: 500 });
+    try {
+      await hubA.open(PATH, { diskText: "x" });
+      await new Promise((r) => setTimeout(r, 300));
+      const b = await hubB.open(PATH, { diskText: "x" });
+      expect(b.session.peers).toBe(1);
+    } finally {
+      await Promise.all([hubA.stop(), hubB.stop()]);
     }
   });
 });

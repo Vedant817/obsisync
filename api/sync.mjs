@@ -290,8 +290,8 @@ var ZodIssueCode = util.arrayToEnum([
   "not_finite"
 ]);
 var quotelessJson = (obj) => {
-  const json = JSON.stringify(obj, null, 2);
-  return json.replace(/"([^"]+)":/g, "$1:");
+  const json2 = JSON.stringify(obj, null, 2);
+  return json2.replace(/"([^"]+)":/g, "$1:");
 };
 var ZodError = class _ZodError extends Error {
   get errors() {
@@ -4256,6 +4256,25 @@ var AckCursorRequestSchema = external_exports.object({
   acknowledgedSeq: external_exports.number().int().min(0)
 });
 
+// ../../packages/protocol/src/live.ts
+var LIVE_LIMITS = {
+  /** Sealed payload ceiling for an incremental update batch (base64url chars). */
+  maxUpdateChars: 7e5,
+  /** Sealed payload ceiling for a snapshot (base64url chars). Fits Vercel's 4.5 MB body. */
+  maxSnapshotChars: 3e6,
+  /** Sealed awareness (cursor) payload ceiling. */
+  maxAwarenessChars: 8e3,
+  /** Docs one poll may watch. */
+  maxDocsPerPoll: 24,
+  /** Events returned per doc per poll. More means `hasMore`. */
+  maxEventsPerDoc: 400,
+  /** Longest server-side long-poll wait. */
+  maxWaitMs: 8e3,
+  /** A cursor is dropped when its device has not refreshed it within this window. */
+  awarenessTtlMs: 3e4
+};
+var LIVE_DOC_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+
 // ../../packages/crypto/src/aead.ts
 var CryptoError = class extends Error {
   detail;
@@ -4799,7 +4818,7 @@ async function hashSha256Hex(data) {
   const digest = await sha256Async(new TextEncoder().encode(data));
   return [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-async function authenticate(db, request) {
+async function authenticate(db, request, options = {}) {
   const header = request.headers.get("authorization") ?? "";
   const prefix = "Bearer ";
   if (!header.startsWith(prefix)) {
@@ -4825,6 +4844,9 @@ async function authenticate(db, request) {
   const vault = await getVaultRow(db, device.vault_id);
   if (!vault) {
     throw new VaultBridgeError("VAULT_NOT_FOUND", "vault missing for device");
+  }
+  if (options.touch === false) {
+    return { vault, device, tokenHash };
   }
   try {
     await touchDeviceSeenStatement(db, device.device_id, (/* @__PURE__ */ new Date()).toISOString()).run();
@@ -4853,8 +4875,16 @@ function rateLimit(key, options = DEFAULT_RATE_LIMIT) {
   return { allowed: true, retryAfterSeconds: 0 };
 }
 function clientKey(request, deviceHint) {
-  const ip = request.headers.get("cf-connecting-ip") ?? "local";
-  return deviceHint ? `d:${deviceHint}` : `ip:${ip}`;
+  if (deviceHint) {
+    return `d:${deviceHint}`;
+  }
+  const auth = request.headers.get("authorization") ?? "";
+  if (auth.startsWith("Bearer ") && auth.length > 24) {
+    return `t:${auth.slice(-24)}`;
+  }
+  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  const ip = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-real-ip") ?? forwarded ?? "local";
+  return `ip:${ip}`;
 }
 
 // src/object-service.ts
@@ -5227,6 +5257,253 @@ var TursoBucket = class {
     await this.ready;
   }
 };
+
+// src/live.ts
+var PAYLOAD_PATTERN = /^[A-Za-z0-9_-]+$/;
+var LIVE_SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS live_events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    vault_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS live_events_doc ON live_events (vault_id, doc_id, seq)`,
+  `CREATE TABLE IF NOT EXISTS live_awareness (
+    vault_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    updated_ms INTEGER NOT NULL,
+    PRIMARY KEY (vault_id, doc_id, device_id)
+  )`
+];
+var ready = /* @__PURE__ */ new WeakSet();
+async function ensureLiveSchema(db) {
+  if (ready.has(db)) {
+    return;
+  }
+  for (const sql of LIVE_SCHEMA) {
+    await db.prepare(sql).run();
+  }
+  ready.add(db);
+}
+function json(payload, status = 200) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }
+  });
+}
+async function readJson(request) {
+  try {
+    return await request.json();
+  } catch {
+    throw new VaultBridgeError("INVALID_REQUEST", "body must be JSON");
+  }
+}
+function checkDocId(docId) {
+  if (!LIVE_DOC_ID_PATTERN.test(docId)) {
+    throw new VaultBridgeError("INVALID_REQUEST", "malformed live document id");
+  }
+}
+var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function handleLiveRoute(db, request, url, vaultId, subpath) {
+  if (!subpath.startsWith("/live/")) {
+    return void 0;
+  }
+  const auth = await authenticate(db, request, { touch: false });
+  if (auth.vault.vault_id !== vaultId) {
+    throw new VaultBridgeError("DEVICE_REVOKED", "device is not a member of this vault", {
+      guidance: "Use the vault this device is paired to."
+    });
+  }
+  await ensureLiveSchema(db);
+  if (subpath === "/live/poll" && request.method === "GET") {
+    return json(await poll(db, auth, url));
+  }
+  const docMatch = subpath.match(/^\/live\/docs\/([^/]+)\/(events|awareness)$/);
+  if (docMatch && request.method === "POST") {
+    const docId = docMatch[1];
+    checkDocId(docId);
+    if (docMatch[2] === "events") {
+      return json(await append(db, auth, docId, await readJson(request)));
+    }
+    await setAwareness(db, auth, docId, await readJson(request));
+    return json({ ok: true });
+  }
+  return void 0;
+}
+var appendSchema = external_exports.object({
+  kind: external_exports.enum(["u", "s"]),
+  payload: external_exports.string().min(1).regex(PAYLOAD_PATTERN),
+  ifHead: external_exports.number().int().min(0).optional(),
+  replaceUpTo: external_exports.number().int().min(0).optional()
+}).strict();
+async function append(db, auth, docId, raw) {
+  const body = appendSchema.parse(raw);
+  const limit = body.kind === "s" ? LIVE_LIMITS.maxSnapshotChars : LIVE_LIMITS.maxUpdateChars;
+  if (body.payload.length > limit) {
+    throw new VaultBridgeError("INVALID_REQUEST", "live payload too large", { status: 413 });
+  }
+  if (body.replaceUpTo !== void 0 && body.kind !== "s") {
+    throw new VaultBridgeError("INVALID_REQUEST", "only a snapshot can replace events");
+  }
+  if (body.replaceUpTo !== void 0 && body.ifHead !== void 0) {
+    throw new VaultBridgeError("INVALID_REQUEST", "a snapshot cannot also be conditional");
+  }
+  const vaultId = auth.vault.vault_id;
+  const deviceId = auth.device.device_id;
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const insert = body.ifHead === void 0 ? db.prepare(
+    "INSERT INTO live_events (vault_id, doc_id, kind, device_id, payload, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+  ).bind(vaultId, docId, body.kind, deviceId, body.payload, now) : db.prepare(
+    `INSERT INTO live_events (vault_id, doc_id, kind, device_id, payload, created_at)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6
+             WHERE COALESCE((SELECT MAX(seq) FROM live_events WHERE vault_id = ?1 AND doc_id = ?2), 0) = ?7`
+  ).bind(vaultId, docId, body.kind, deviceId, body.payload, now, body.ifHead);
+  const statements = [insert];
+  if (body.replaceUpTo !== void 0) {
+    statements.push(
+      db.prepare("DELETE FROM live_events WHERE vault_id = ?1 AND doc_id = ?2 AND seq <= ?3").bind(vaultId, docId, body.replaceUpTo)
+    );
+  }
+  const results = await db.batch(statements);
+  const inserted = results[0];
+  const applied = inserted.meta.changes > 0;
+  const headRow = await db.prepare("SELECT COALESCE(MAX(seq), 0) AS head FROM live_events WHERE vault_id = ?1 AND doc_id = ?2").bind(vaultId, docId).first();
+  return {
+    applied,
+    seq: applied ? Number(inserted.meta.lastSeq ?? 0) || null : null,
+    head: Number(headRow?.head ?? 0)
+  };
+}
+var awarenessSchema = external_exports.object({ payload: external_exports.string().min(1).max(LIVE_LIMITS.maxAwarenessChars).regex(PAYLOAD_PATTERN).nullable() }).strict();
+async function setAwareness(db, auth, docId, raw) {
+  const body = awarenessSchema.parse(raw);
+  const vaultId = auth.vault.vault_id;
+  const deviceId = auth.device.device_id;
+  const now = Date.now();
+  if (body.payload === null) {
+    await db.prepare("DELETE FROM live_awareness WHERE vault_id = ?1 AND doc_id = ?2 AND device_id = ?3").bind(vaultId, docId, deviceId).run();
+    return;
+  }
+  await db.batch([
+    db.prepare(
+      `INSERT INTO live_awareness (vault_id, doc_id, device_id, payload, updated_ms) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (vault_id, doc_id, device_id) DO UPDATE SET payload = excluded.payload, updated_ms = excluded.updated_ms`
+    ).bind(vaultId, docId, deviceId, body.payload, now),
+    db.prepare("DELETE FROM live_awareness WHERE vault_id = ?1 AND updated_ms < ?2").bind(vaultId, now - LIVE_LIMITS.awarenessTtlMs * 4)
+  ]);
+}
+function parseWatches(raw) {
+  if (!raw) {
+    throw new VaultBridgeError("INVALID_REQUEST", "poll needs at least one document");
+  }
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const part of raw.split(",")) {
+    const [docId, afterRaw] = part.split(":");
+    if (!docId) {
+      continue;
+    }
+    checkDocId(docId);
+    const after = Number(afterRaw ?? "0");
+    if (!Number.isInteger(after) || after < 0) {
+      throw new VaultBridgeError("INVALID_REQUEST", "malformed live cursor");
+    }
+    if (!seen.has(docId)) {
+      seen.add(docId);
+      out.push({ docId, after });
+    }
+  }
+  if (out.length === 0 || out.length > LIVE_LIMITS.maxDocsPerPoll) {
+    throw new VaultBridgeError("INVALID_REQUEST", `poll watches 1-${LIVE_LIMITS.maxDocsPerPoll} documents`);
+  }
+  return out;
+}
+async function poll(db, auth, url) {
+  const watches = parseWatches(url.searchParams.get("d"));
+  const waitRaw = Number(url.searchParams.get("wait") ?? "0");
+  const wait = Number.isFinite(waitRaw) ? Math.min(Math.max(0, Math.floor(waitRaw)), LIVE_LIMITS.maxWaitMs) : 0;
+  const sinceRaw = Number(url.searchParams.get("as") ?? "0");
+  const awarenessSince = Number.isFinite(sinceRaw) ? Math.max(0, sinceRaw) : 0;
+  const includeSelf = url.searchParams.get("self") === "1";
+  const vaultId = auth.vault.vault_id;
+  const me = auth.device.device_id;
+  const deadline = Date.now() + wait;
+  for (; ; ) {
+    const changed = await probe(db, vaultId, me, watches, awarenessSince);
+    if (changed.size > 0 || Date.now() >= deadline) {
+      const docs = [];
+      const awareness = await readAwareness(db, vaultId, me, watches, awarenessSince);
+      for (const watch of watches) {
+        const delta = changed.has(watch.docId) ? await readEvents(db, vaultId, me, watch, includeSelf) : { docId: watch.docId, events: [], cursor: watch.after, hasMore: false, awareness: [] };
+        delta.awareness = awareness.get(watch.docId) ?? [];
+        docs.push(delta);
+      }
+      return { docs, serverMs: Date.now() };
+    }
+    await sleep(Math.min(200, Math.max(0, deadline - Date.now())));
+  }
+}
+async function probe(db, vaultId, me, watches, awarenessSince) {
+  const placeholders = watches.map((_, i) => `?${i + 4}`).join(", ");
+  const fresh = Math.max(awarenessSince, Date.now() - LIVE_LIMITS.awarenessTtlMs);
+  const rows = await db.prepare(
+    `SELECT doc_id AS d, MAX(seq) AS v, 'e' AS t FROM live_events
+         WHERE vault_id = ?1 AND doc_id IN (${placeholders}) GROUP BY doc_id
+       UNION ALL
+       SELECT doc_id AS d, MAX(updated_ms) AS v, 'a' AS t FROM live_awareness
+         WHERE vault_id = ?1 AND device_id != ?2 AND updated_ms > ?3 AND doc_id IN (${placeholders}) GROUP BY doc_id`
+  ).bind(vaultId, me, fresh, ...watches.map((w) => w.docId)).all();
+  const after = new Map(watches.map((w) => [w.docId, w.after]));
+  const changed = /* @__PURE__ */ new Set();
+  for (const row of rows.results) {
+    if (row.t === "a" || Number(row.v) > (after.get(row.d) ?? 0)) {
+      changed.add(row.d);
+    }
+  }
+  return changed;
+}
+async function readEvents(db, vaultId, me, watch, includeSelf) {
+  const rows = await db.prepare(
+    `SELECT seq, kind, device_id, payload FROM live_events
+       WHERE vault_id = ?1 AND doc_id = ?2 AND seq > ?3 ORDER BY seq ASC LIMIT ?4`
+  ).bind(vaultId, watch.docId, watch.after, LIVE_LIMITS.maxEventsPerDoc + 1).all();
+  const scanned = rows.results.slice(0, LIVE_LIMITS.maxEventsPerDoc);
+  const events = [];
+  for (const row of scanned) {
+    if (!includeSelf && row.device_id === me) {
+      continue;
+    }
+    events.push({ seq: Number(row.seq), kind: row.kind, deviceId: row.device_id, payload: row.payload });
+  }
+  const last = scanned[scanned.length - 1];
+  return {
+    docId: watch.docId,
+    events,
+    cursor: last ? Number(last.seq) : watch.after,
+    hasMore: rows.results.length > LIVE_LIMITS.maxEventsPerDoc,
+    awareness: []
+  };
+}
+async function readAwareness(db, vaultId, me, watches, awarenessSince) {
+  const placeholders = watches.map((_, i) => `?${i + 4}`).join(", ");
+  const fresh = Math.max(awarenessSince, Date.now() - LIVE_LIMITS.awarenessTtlMs);
+  const rows = await db.prepare(
+    `SELECT doc_id, device_id, payload, updated_ms FROM live_awareness
+       WHERE vault_id = ?1 AND device_id != ?2 AND updated_ms > ?3 AND doc_id IN (${placeholders})`
+  ).bind(vaultId, me, fresh, ...watches.map((w) => w.docId)).all();
+  const out = /* @__PURE__ */ new Map();
+  for (const row of rows.results) {
+    const list = out.get(row.doc_id) ?? [];
+    list.push({ deviceId: row.device_id, payload: row.payload, updatedMs: Number(row.updated_ms) });
+    out.set(row.doc_id, list);
+  }
+  return out;
+}
 
 // src/routes.ts
 var JSON_HEADERS = {
@@ -5824,9 +6101,12 @@ async function handleVaultState(ctx, vaultId) {
 function applyRateLimit(request, env2, requestId) {
   const max = env2.RATE_LIMIT_MAX ? Number(env2.RATE_LIMIT_MAX) : DEFAULT_RATE_LIMIT.max;
   const windowMs = env2.RATE_LIMIT_WINDOW_MS ? Number(env2.RATE_LIMIT_WINDOW_MS) : DEFAULT_RATE_LIMIT.windowMs;
-  const scopedKey = `${env2.RATE_SCOPE ?? "default"}:${clientKey(request)}`;
+  const live = new URL(request.url).pathname.includes("/live/");
+  const liveMax = env2.RATE_LIMIT_LIVE_MAX ? Number(env2.RATE_LIMIT_LIVE_MAX) : 2400;
+  const scopedKey = `${env2.RATE_SCOPE ?? "default"}:${live ? "live:" : ""}${clientKey(request)}`;
+  const limit = live ? liveMax : max;
   const verdict = rateLimit(scopedKey, {
-    max: Number.isFinite(max) ? max : DEFAULT_RATE_LIMIT.max,
+    max: Number.isFinite(limit) ? limit : DEFAULT_RATE_LIMIT.max,
     windowMs: Number.isFinite(windowMs) ? windowMs : DEFAULT_RATE_LIMIT.windowMs
   });
   if (!verdict.allowed) {
@@ -5851,6 +6131,9 @@ async function route(ctx) {
   if (vaultMatch) {
     const vaultId = vaultMatch[1];
     const subpath = vaultMatch[2] ?? "";
+    if (subpath.startsWith("/live/")) {
+      return handleLiveRoute(ctx.env.DB, ctx.request, ctx.url, vaultId, subpath);
+    }
     if (subpath === "/state") {
       return handleVaultState(ctx, vaultId);
     }

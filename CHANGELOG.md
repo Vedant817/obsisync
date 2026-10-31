@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- Live editing. A note open on two devices updates as you type, like a shared document. Edits made on both devices at the same time merge letter by letter instead of one replacing the other.
+- Each device's cursor and selection show in the other device's editor, labelled with the device name. Set the name under Live editing in settings.
+- Every keystroke and cursor position is encrypted on the device before it is sent. The server stores ciphertext and an id it cannot turn back into a note name.
+- A note edited while it was closed, offline, or by another app is folded into the live note when it next opens, so neither side's edit is lost.
+- Notes that are not open, attachments, and large files keep syncing as whole files.
+
 ## 0.2.13
 
 - Sync keeps going when one note cannot be read. A dropped connection retries on the next poll. A later edit or delete replaces the older one without asking which copy to keep.

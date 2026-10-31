@@ -1,6 +1,6 @@
 # Sealed Sync
 
-Sealed Sync keeps an Obsidian vault in sync across your computers and phones. Each note is encrypted on the device before it is uploaded. Sync runs on its own. There is no Sync button.
+Sealed Sync keeps an Obsidian vault in sync across your computers and phones. A note open on two devices updates as you type, like a shared document, with each device's cursor shown. Each keystroke and each note is encrypted on the device before it is uploaded. Sync runs on its own. There is no Sync button.
 
 The hosted API is `https://vaultbridge-three.vercel.app`. A phone on mobile data uses that same address. The computer that created the vault does not have to stay on, and the other device does not have to be on the same Wi-Fi.
 
@@ -18,7 +18,8 @@ People usually pick one of four ways to sync a vault. Each one is good at someth
 | --- | --- | --- | --- | --- | --- |
 | What you pay | Plugin is free. The hosted API above is the one this project runs. | Paid. Standard is $4 per month billed annually, or $5 month to month. Plus is $8 or $10. | Plugin is free. You run CouchDB, object storage, or a peer relay. | Plugin is free. You bring Dropbox, S3, WebDAV, or similar. | Free. Devices talk to each other. |
 | Encryption | On by default. AES-256-GCM on the device. The server stores ciphertext. | On by default. AES-256-GCM. Some sync metadata is not end-to-end encrypted. | On when you enable it. You operate the server. | Optional. Blank password means the bucket holds plain notes. | The files never sit on a sync vendor's server. |
-| How sync starts | Automatic. About once a second on desktop, about every five seconds on mobile. | Automatic, in the official app. | Near real time once the server is configured. | On a schedule, or when you run it. | Continuous, while both devices are online together. |
+| Typing on two devices at once | Merged letter by letter, live, with the other device's cursor shown. | Merged when the file syncs. No live cursors. | The file syncs in near real time. No live cursors. | Conflicts at sync time. | Conflict copies. |
+| How sync starts | Automatic. Open notes update as you type. Other notes sync about once a second on desktop, about every five seconds on mobile. | Automatic, in the official app. | Near real time once the server is configured. | On a schedule, or when you run it. | Continuous, while both devices are online together. |
 | A new phone | Install the plugin, then scan a QR or type three values. | Sign in to your Obsidian account. | Install the plugin, then connect it to your server. | Install the plugin, then connect your storage account. | Pair the devices on the network. There is no official iOS app. |
 | Setup you avoid | No Tailscale, no copying `main.js` onto the phone, no second sync button. | No server to run. | No hosted account. | You reuse storage you already pay for. | No account and no central copy. |
 | Where this one stops | One request can be about 4.5 MB on the current host. A normal note fits. A large attachment can fail. Version history is per note on the server, not the official history viewer. | Vault count, storage, and file size follow the plan. Standard's max file size is 5 MB. | You patch, back up, and secure the server. | Conflicts are easier to hit because sync is not continuous. | Both devices must be reachable. iOS needs a third-party app. |
@@ -29,9 +30,20 @@ Official Obsidian Sync can stay installed. Turn one of them off. Two sync tools 
 
 Prices and plan limits above are from Obsidian's public Sync page and from community write-ups checked in 2026. Recheck [obsidian.md/sync](https://obsidian.md/sync) before you compare a bill.
 
+## Live editing
+
+Open the same note on two devices and type on either one. The other device shows the edit within about a second, without reloading the note and without moving your cursor. Edits made on both devices at the same moment are merged letter by letter. Neither one replaces the other.
+
+- **Cursors.** Each device's cursor and selection appear in the other device's editor, in a colour per device, labelled with the device name. Set the name under **Live editing** in settings. The status bar shows how many other devices are editing.
+- **Encrypted.** Each change and each cursor position is sealed with AES-256-GCM on the device, under a key derived from the vault key. The server keeps an ordered log of sealed changes per note, and an id it cannot turn back into a note name.
+- **Offline.** Edits made while offline are sent when the device reconnects and merge with whatever changed in the meantime. A note changed while it was closed, for example by another app or a template, is folded into the live note the next time it opens.
+- **Scope.** Markdown and text notes under 1 MB are edited live. Attachments, canvases, and notes that are not open sync as whole files, as before.
+
+Turn live editing off under **Live editing** in settings to sync open notes as whole files only.
+
 ## Network
 
-Sealed Sync sends ciphertext and sync metadata to `https://vaultbridge-three.vercel.app`. That server stores them in Turso. File names travel inside the encrypted manifest. The vault key stays on your devices. A recovery phrase unwraps it.
+Sealed Sync sends ciphertext and sync metadata to `https://vaultbridge-three.vercel.app`. That server stores them in Turso. While a note is open, the plugin keeps one request open to that server to receive live edits and cursors. File names travel inside the encrypted manifest. The vault key stays on your devices. A recovery phrase unwraps it.
 
 The hosted service is required for devices to see each other's changes, unless you point the plugin at your own server. The plugin does not sell a subscription and it does not add an account login. The pairing QR contains the recovery phrase, so keep that screen private.
 
@@ -69,7 +81,7 @@ Clearing Obsidian's cache does not remove that file. Deleting the `obsisync` plu
 
 A wrong recovery phrase uses up that pairing code and adds a device that never saved its token. Create another code, then revoke the extra device from **Refresh vault info**.
 
-If the same note was edited on both devices, both edits stay in that one note. Obsidian asks you to choose **Keep mine** or **Keep theirs**. The file name does not change, and an identical note is not saved a second time.
+If the same note is open on both devices, edits merge live as you type. If it was edited on both devices while it was closed on one of them, the edit made in that note's editor is folded into the live note when it opens. Otherwise the later edit replaces the note. The file name does not change, and an identical note is not saved a second time.
 
 **Pause sync** holds uploads and downloads until you turn it off. Leave it off for normal use.
 
@@ -87,6 +99,7 @@ This repository is the plugin and the sync API.
 | `packages/crypto` | AES-256-GCM, HKDF, and the recovery phrase. |
 | `packages/protocol` | Request and response shapes shared by the plugin and the API. |
 | `packages/sync-core` | Scan, reconcile, push, and conflict handling. |
+| `packages/live-core` | Live editing: the CRDT document, sealing, and the poll loop. |
 | `apps/worker` | Node API. Journal and ciphertext are both in Turso. |
 | `api/sync.mjs` | Built Vercel function. Do not edit it by hand. |
 | `public` | Small page for the hosted API. Health is `/v1/health`. |

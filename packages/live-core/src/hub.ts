@@ -216,6 +216,7 @@ export class LiveHub {
       }
       const wait = list.some((s) => s.hasMore) ? 0 : this.opts.longPollMs;
       this.pollStartedAt = Date.now();
+      this.pollCount++;
       try {
         const res = await this.opts.transport.poll(
           list.map((s) => ({ docId: s.docId, after: s.cursor })),
@@ -224,7 +225,7 @@ export class LiveHub {
         for (const delta of res.docs) {
           await this.sessions.get(delta.docId)?.applyDelta(delta);
         }
-        this.awarenessSince = Math.max(0, res.serverMs - 3_000);
+        this.noteAwareness(res.docs);
         this.backoffMs = 0;
         this.refreshStatus("live", null);
       } catch (err) {
@@ -264,6 +265,7 @@ export class LiveHub {
             for (const delta of res.docs) {
               await this.sessions.get(delta.docId)?.applyDelta(delta);
             }
+            this.noteAwareness(res.docs);
           } catch {
             return;
           }
@@ -273,6 +275,22 @@ export class LiveHub {
       }
     })();
   }
+
+  /**
+   * Ask only for cursors newer than the newest one seen. Re-asking for an
+   * older window would make every long poll return at once while a cursor
+   * row stays inside it.
+   */
+  private noteAwareness(docs: { awareness: { updatedMs: number }[] }[]): void {
+    for (const doc of docs) {
+      for (const entry of doc.awareness) {
+        this.awarenessSince = Math.max(this.awarenessSince, entry.updatedMs);
+      }
+    }
+  }
+
+  /** Polls issued by the main loop (diagnostics and tests). */
+  pollCount = 0;
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => {

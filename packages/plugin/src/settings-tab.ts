@@ -29,6 +29,10 @@ export interface SettingsHost {
   conflictRows(): ConflictRow[];
   trackedFiles(): TrackedFile[];
   sender(): HttpSender;
+  setLiveEditing(on: boolean): Promise<void>;
+  setDeviceName(name: string): Promise<void>;
+  deviceLabel(): string;
+  liveSummary(): string;
 }
 
 interface DeviceWire {
@@ -59,7 +63,7 @@ export function renderSettings(container: HTMLElement, host: SettingsHost, redra
         ? "This computer is signed in to your vault. Paste the recovery phrase below to unlock it and to show a pairing QR."
         : host.settings.uploadsPaused
           ? "Sync is paused. Turn Pause sync off when you want notes to move again. You can still create a pairing code."
-          : "Realtime sync is on. Edits upload on their own, and this device checks for remote changes about once a second.",
+          : "Realtime sync is on. A note open on two devices updates as you type, with each device's cursor shown. Other notes sync on their own about once a second.",
   });
 
   const address = new Setting(container)
@@ -85,6 +89,7 @@ export function renderSettings(container: HTMLElement, host: SettingsHost, redra
   }
   renderInvite(container, host, redraw);
   renderPause(container, host);
+  renderLive(container, host, redraw);
   renderStatus(container, host);
   renderHistory(container, host);
   renderRemote(container, host, redraw);
@@ -252,6 +257,32 @@ function renderPause(container: HTMLElement, host: SettingsHost): void {
       toggle.setValue(host.settings.uploadsPaused).onChange((value) => {
         void host.setUploadsPaused(value);
       });
+    });
+}
+
+function renderLive(container: HTMLElement, host: SettingsHost, redraw: () => void): void {
+  container.createEl("h3", { text: "Live editing" });
+  container.createEl("p", { text: host.liveSummary() });
+  new Setting(container)
+    .setName("Edit open notes live")
+    .setDesc(
+      "Typing shows up on your other devices as you type, and edits made on two devices at once merge letter by letter. Every keystroke is encrypted on this device first. Turn this off to sync open notes as whole files only.",
+    )
+    .addToggle((toggle) => {
+      toggle.setValue(host.settings.liveEditing).onChange((value) => {
+        void host.setLiveEditing(value).then(redraw);
+      });
+    });
+  new Setting(container)
+    .setName("Device name")
+    .setDesc("Shown next to this device's cursor on your other devices. It is encrypted before it leaves this device.")
+    .addText((text) => {
+      text
+        .setPlaceholder(host.deviceLabel())
+        .setValue(host.settings.deviceName)
+        .onChange((value) => {
+          void host.setDeviceName(value);
+        });
     });
 }
 

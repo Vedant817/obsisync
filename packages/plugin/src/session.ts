@@ -196,7 +196,8 @@ export async function openEngine(
   });
 }
 
-async function unlockSettings(settings: VaultBridgeSettings): Promise<Uint8Array> {
+/** Unwrap the vault key with whatever this device holds. */
+export async function unlockSettings(settings: VaultBridgeSettings): Promise<Uint8Array> {
   if (settings.passphrase && settings.wrappedVaultKeyB64 && settings.kdfParamsJson) {
     return unwrapWithPassphrase(
       settings.wrappedVaultKeyB64,
