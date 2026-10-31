@@ -1,7 +1,8 @@
 import { Notice, Setting, type App, type Plugin } from "obsidian";
 import type { HttpSender } from "@vaultbridge/sync-core";
 import { parseJournal } from "@vaultbridge/sync-core";
-import type { VaultBridgeSettings } from "./settings.js";
+import { pairingLink, pairingQrSvg, parsePairingLink } from "./pairing-link.js";
+import { canonicalServerUrl, PRODUCTION_SERVER_URL, type VaultBridgeSettings } from "./settings.js";
 
 export interface ConflictRow {
   fileId: string;
@@ -46,22 +47,22 @@ interface UsageWire {
 }
 
 export function renderSettings(container: HTMLElement, host: SettingsHost, redraw: () => void): void {
-  container.addClass("vaultbridge-settings");
-  container.createEl("h2", { text: "VaultBridge" });
+  container.addClass("obsisync-settings");
+  container.createEl("h2", { text: "ObsiSync" });
   const ready = Boolean(host.settings.deviceToken && host.settings.vaultId);
   container.createEl("p", {
-    cls: "vaultbridge-live",
+    cls: "obsisync-live",
     text: ready
       ? "Realtime sync is on. Edits upload on their own, and this device checks for remote changes about once a second."
-      : "This device is not in a vault yet. Join with a pairing code, or paste a one-time setup token.",
+      : "This device is not in a vault yet. Scan a pairing QR, type the codes, or paste a one-time setup token.",
   });
 
   new Setting(container)
     .setName("API address")
-    .setDesc("Already set to the VaultBridge server. A phone on mobile data uses this same address. Reload Obsidian after you change it.")
+    .setDesc("Already set to the ObsiSync server. A phone on mobile data uses this same address. Reload Obsidian after you change it.")
     .addText((text) => {
       text.setValue(host.settings.serverUrl).onChange(async (value) => {
-        host.settings.serverUrl = value.trim() || "http://127.0.0.1:8787";
+        host.settings.serverUrl = value.trim() || PRODUCTION_SERVER_URL;
         await host.saveSettings();
       });
     });
@@ -83,6 +84,36 @@ export function renderSettings(container: HTMLElement, host: SettingsHost, redra
 
 function renderJoin(container: HTMLElement, host: SettingsHost): void {
   container.createEl("h3", { text: "Join a vault" });
+  container.createEl("p", {
+    text: "On the first device, create a pairing code. Then either scan its QR with this device's camera, or type the three values below.",
+  });
+  let pasted = "";
+  new Setting(container)
+    .setName("Pairing link")
+    .setDesc("If the camera copies the link instead of opening Obsidian, paste it here.")
+    .addTextArea((text) => {
+      text.onChange((value) => {
+        pasted = value.trim();
+      });
+    });
+  new Setting(container).addButton((button) => {
+    button.setButtonText("Join from link").setCta().onClick(() => {
+      const payload = parsePairingLink(pasted);
+      if (!payload) {
+        new Notice("ObsiSync could not read that pairing link.");
+        return;
+      }
+      host.settings.serverUrl = canonicalServerUrl(payload.serverUrl);
+      void host
+        .saveSettings()
+        .then(() => host.joinVault(payload.inviteId, payload.pairingCode, payload.recoveryPhrase))
+        .catch((err: unknown) => {
+          new Notice(messageOf(err));
+        });
+    });
+  });
+
+  container.createEl("h4", { text: "Or type the codes" });
   let inviteId = "";
   let pairingCode = "";
   let recoveryPhrase = "";
@@ -105,7 +136,7 @@ function renderJoin(container: HTMLElement, host: SettingsHost): void {
       });
     });
   new Setting(container).addButton((button) => {
-    button.setButtonText("Join vault").setCta().onClick(() => {
+    button.setButtonText("Join vault").onClick(() => {
       void host.joinVault(inviteId, pairingCode, recoveryPhrase).catch((err: unknown) => {
         new Notice(messageOf(err));
       });
@@ -138,7 +169,7 @@ function renderRecovery(container: HTMLElement, host: SettingsHost): void {
   container.createEl("p", {
     text: "Type this phrase on the second device. It unwraps the vault key. It stays on this device only.",
   });
-  const box = container.createEl("textarea", { cls: "vaultbridge-secret" });
+  const box = container.createEl("textarea", { cls: "obsisync-secret" });
   box.value = host.settings.recoveryPhrase;
   box.rows = 3;
   box.addEventListener("change", () => {
@@ -150,12 +181,15 @@ function renderRecovery(container: HTMLElement, host: SettingsHost): void {
 function renderInvite(container: HTMLElement, host: SettingsHost, redraw: () => void): void {
   container.createEl("h3", { text: "Pair a second device" });
   container.createEl("p", {
-    text: "The code works once and expires ten minutes after you create it. Create a new one if it expires.",
+    text: "Install ObsiSync on the other device first. A code works once and expires ten minutes after you create it.",
   });
   if (host.settings.inviteId && host.settings.inviteCode) {
+    container.createEl("h4", { text: "Type these on the other device" });
     container.createEl("p", { text: `Invite id: ${host.settings.inviteId}` });
-    container.createEl("p", { cls: "vaultbridge-secret", text: `Pairing code: ${host.settings.inviteCode}` });
+    container.createEl("p", { cls: "obsisync-secret", text: `Pairing code: ${host.settings.inviteCode}` });
+    container.createEl("p", { text: "The recovery phrase is in the box above." });
     container.createEl("p", { text: host.settings.inviteExpiresAt ? `Expires ${host.settings.inviteExpiresAt}` : "" });
+    renderQr(container, host);
   }
   new Setting(container).addButton((button) => {
     button.setButtonText("Create a pairing code").setCta().onClick(() => {
@@ -164,6 +198,34 @@ function renderInvite(container: HTMLElement, host: SettingsHost, redraw: () => 
       });
     });
   });
+}
+
+function renderQr(container: HTMLElement, host: SettingsHost): void {
+  if (!host.settings.recoveryPhrase) {
+    container.createEl("p", { text: "The recovery phrase has to be on this device before a QR can join another device." });
+    return;
+  }
+  container.createEl("h4", { text: "Or let the other device scan" });
+  container.createEl("p", {
+    text: "Open the camera on the other device and point it at this code. That device joins on its own. The code contains the recovery phrase, so keep this screen private.",
+  });
+  const link = pairingLink({
+    serverUrl: host.settings.serverUrl,
+    inviteId: host.settings.inviteId,
+    pairingCode: host.settings.inviteCode,
+    recoveryPhrase: host.settings.recoveryPhrase,
+  });
+  const holder = container.createDiv({ cls: "obsisync-qr" });
+  mountQr(holder, pairingQrSvg(link));
+}
+
+function mountQr(holder: HTMLElement, svg: string): void {
+  const parsed = new DOMParser().parseFromString(svg, "image/svg+xml");
+  const root = parsed.documentElement;
+  if (root.nodeName.toLowerCase() !== "svg") {
+    return;
+  }
+  holder.appendChild(holder.ownerDocument.importNode(root, true));
 }
 
 function renderPause(container: HTMLElement, host: SettingsHost): void {
@@ -325,5 +387,5 @@ function messageOf(body: unknown): string {
   if (body && typeof body === "object" && "message" in body) {
     return String((body as { message: unknown }).message);
   }
-  return "VaultBridge request failed";
+  return "ObsiSync request failed";
 }

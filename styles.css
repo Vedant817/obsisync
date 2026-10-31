@@ -1,14 +1,27 @@
-.vaultbridge-settings p {
+.obsisync-settings p {
   margin: 0.4em 0;
 }
 
-.vaultbridge-settings .vaultbridge-live {
+.obsisync-settings .obsisync-live {
   font-weight: 600;
 }
 
-.vaultbridge-settings .vaultbridge-secret,
-.vaultbridge-settings textarea.vaultbridge-secret {
+.obsisync-settings .obsisync-secret,
+.obsisync-settings textarea.obsisync-secret {
   font-family: var(--font-monospace);
   width: 100%;
   white-space: pre-wrap;
+}
+
+.obsisync-settings .obsisync-qr {
+  display: inline-block;
+  background: #fff;
+  padding: 8px;
+  border-radius: 8px;
+}
+
+.obsisync-settings .obsisync-qr svg {
+  display: block;
+  width: 220px;
+  height: 220px;
 }

@@ -11,6 +11,7 @@ import {
   type SettingsHost,
   type TrackedFile,
 } from "./settings-tab.js";
+import { parsePairingParams, type PairingPayload } from "./pairing-link.js";
 import { canonicalServerUrl, emptySettings, type VaultBridgeSettings } from "./settings.js";
 
 export default class VaultBridgePlugin extends Plugin implements SettingsHost {
@@ -29,7 +30,10 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
     this.settings.pollMs = this.settings.pollMs > 0 ? this.settings.pollMs : 1000;
     await this.saveSettings();
     this.addSettingTab(new VaultBridgeSettingTab(this));
-    this.setStatus("VaultBridge live · starting");
+    this.registerObsidianProtocolHandler("obsisync", (params) => {
+      void this.joinFromScan(params);
+    });
+    this.setStatus("ObsiSync live · starting");
     this.app.workspace.onLayoutReady(() => {
       void this.start();
     });
@@ -46,7 +50,7 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
       const sender = this.sender();
       if (!this.settings.deviceToken) {
         if (!this.settings.bootstrapToken) {
-          this.setStatus("VaultBridge live · set up");
+          this.setStatus("ObsiSync live · set up");
           return;
         }
         await ensureDevice(this.settings, sender);
@@ -70,16 +74,39 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
       if (!this.settings.uploadsPaused) {
         this.realtime.noteChange();
       }
-      this.setStatus(this.settings.uploadsPaused ? "VaultBridge live · paused" : "VaultBridge live");
+      this.setStatus(this.settings.uploadsPaused ? "ObsiSync live · paused" : "ObsiSync live");
       if (officialSyncEnabled(this.app)) {
-        new Notice("VaultBridge is syncing this vault in realtime. Obsidian Sync is also enabled. Use one sync service so they do not overwrite each other.");
+        new Notice("ObsiSync is syncing this vault in realtime. Obsidian Sync is also enabled. Use one sync service so they do not overwrite each other.");
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : "sync failed to start";
       this.settings.lastError = message;
       await this.saveSettings();
-      this.setStatus("VaultBridge live · offline");
-      new Notice(`VaultBridge: ${message}`);
+      this.setStatus("ObsiSync live · offline");
+      new Notice(`ObsiSync: ${message}`);
+    }
+  }
+
+  private async joinFromScan(params: Record<string, string>): Promise<void> {
+    const payload = parsePairingParams(params);
+    if (!payload) {
+      new Notice("ObsiSync could not read that pairing QR.");
+      return;
+    }
+    await this.joinFromPayload(payload);
+  }
+
+  private async joinFromPayload(payload: PairingPayload): Promise<void> {
+    if (this.settings.deviceToken) {
+      new Notice("This device is already in a vault. Scan the QR on a device that has not joined yet.");
+      return;
+    }
+    this.settings.serverUrl = canonicalServerUrl(payload.serverUrl);
+    await this.saveSettings();
+    try {
+      await this.joinVault(payload.inviteId, payload.pairingCode, payload.recoveryPhrase);
+    } catch (err) {
+      new Notice(err instanceof Error ? err.message : "ObsiSync could not join from that QR.");
     }
   }
 
@@ -104,12 +131,12 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
     }
     if (paused) {
       await this.engine.pause("uploads paused");
-      this.setStatus("VaultBridge live · paused");
+      this.setStatus("ObsiSync live · paused");
       return;
     }
     await this.engine.resume();
     this.realtime?.noteChange();
-    this.setStatus("VaultBridge live");
+    this.setStatus("ObsiSync live");
   }
 
   async resolveConflict(fileId: string, choice: "local" | "remote"): Promise<void> {
@@ -139,7 +166,7 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
   private async showOutcome(outcome: RealtimeOutcome): Promise<void> {
     if ("error" in outcome) {
       this.settings.lastError = outcome.error;
-      this.setStatus("VaultBridge live · offline");
+      this.setStatus("ObsiSync live · offline");
       await this.saveSettings();
       return;
     }
@@ -149,15 +176,15 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
     this.settings.lastPushes = report.pushes;
     this.settings.lastPulls = report.pulls;
     if (report.pausedReason) {
-      this.setStatus(`VaultBridge live · paused`);
+      this.setStatus("ObsiSync live · paused");
     } else if (report.status === "OFFLINE" || report.errors.length > 0) {
-      this.setStatus("VaultBridge live · offline");
+      this.setStatus("ObsiSync live · offline");
     } else if (report.conflicts > 0 || report.status === "CONFLICT") {
-      this.setStatus("VaultBridge live · conflict");
+      this.setStatus("ObsiSync live · conflict");
     } else if (report.pushes > 0 || report.pulls > 0) {
-      this.setStatus("VaultBridge live · syncing");
+      this.setStatus("ObsiSync live · syncing");
     } else {
-      this.setStatus("VaultBridge live");
+      this.setStatus("ObsiSync live");
     }
     await this.saveSettings();
   }

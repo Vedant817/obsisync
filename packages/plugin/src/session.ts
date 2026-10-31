@@ -75,7 +75,7 @@ export async function ensureDevice(
     return settings;
   }
   if (!settings.bootstrapToken) {
-    throw new Error("This device has no VaultBridge credential yet.");
+    throw new Error("This device has no ObsiSync credential yet.");
   }
   const vmk = generateVaultMasterKey();
   const recoveryKey = generateRecoveryKey();
@@ -173,7 +173,7 @@ export async function openEngine(
   persistSettings: (settings: VaultBridgeSettings) => Promise<void>,
 ): Promise<SyncEngine> {
   if (!settings.deviceToken || !settings.vaultId) {
-    throw new Error("VaultBridge is not set up on this device.");
+    throw new Error("ObsiSync is not set up on this device.");
   }
   const vmk = await unlockSettings(settings);
   const journal = new SyncJournal(settingsJournal(settings, persistSettings));
@@ -207,7 +207,7 @@ async function unlockSettings(settings: VaultBridgeSettings): Promise<Uint8Array
   if (settings.recoveryPhrase && settings.wrappedVaultKeyRecoveryB64) {
     return unwrapWithRecoveryPhrase(settings.wrappedVaultKeyRecoveryB64, settings.recoveryPhrase);
   }
-  throw new Error("VaultBridge is locked. Enter the recovery phrase on this device.");
+  throw new Error("ObsiSync is locked. Enter the recovery phrase on this device.");
 }
 
 async function unlockFromPhrase(state: VaultStateWire, recoveryPhrase: string): Promise<void> {
