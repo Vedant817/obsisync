@@ -33,7 +33,7 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
     this.registerObsidianProtocolHandler("obsisync", (params) => {
       void this.joinFromScan(params);
     });
-    this.setStatus("ObsiSync live · starting");
+    this.setStatus("Sealed Sync live · starting");
     this.app.workspace.onLayoutReady(() => {
       void this.start();
     });
@@ -50,11 +50,15 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
       const sender = this.sender();
       if (!this.settings.deviceToken) {
         if (!this.settings.bootstrapToken) {
-          this.setStatus("ObsiSync live · set up");
+          this.setStatus("Sealed Sync live · set up");
           return;
         }
         await ensureDevice(this.settings, sender);
         await this.saveSettings();
+      }
+      if (!this.settings.passphrase && !this.settings.recoveryPhrase) {
+        this.setStatus("Sealed Sync live · locked");
+        return;
       }
       const engine = await openEngine(new ObsidianLocalVault(this.app.vault), this.settings, sender, async (next) => {
         this.settings = next;
@@ -74,23 +78,23 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
       if (!this.settings.uploadsPaused) {
         this.realtime.noteChange();
       }
-      this.setStatus(this.settings.uploadsPaused ? "ObsiSync live · paused" : "ObsiSync live");
+      this.setStatus(this.settings.uploadsPaused ? "Sealed Sync live · paused" : "Sealed Sync live");
       if (officialSyncEnabled(this.app)) {
-        new Notice("ObsiSync is syncing this vault in realtime. Obsidian Sync is also enabled. Use one sync service so they do not overwrite each other.");
+        new Notice("Sealed Sync is syncing this vault in realtime. Obsidian Sync is also enabled. Use one sync service so they do not overwrite each other.");
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : "sync failed to start";
       this.settings.lastError = message;
       await this.saveSettings();
-      this.setStatus("ObsiSync live · offline");
-      new Notice(`ObsiSync: ${message}`);
+      this.setStatus("Sealed Sync live · offline");
+      new Notice(`Sealed Sync: ${message}`);
     }
   }
 
   private async joinFromScan(params: Record<string, string>): Promise<void> {
     const payload = parsePairingParams(params);
     if (!payload) {
-      new Notice("ObsiSync could not read that pairing QR.");
+      new Notice("Sealed Sync could not read that pairing QR.");
       return;
     }
     await this.joinFromPayload(payload);
@@ -106,7 +110,7 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
     try {
       await this.joinVault(payload.inviteId, payload.pairingCode, payload.recoveryPhrase);
     } catch (err) {
-      new Notice(err instanceof Error ? err.message : "ObsiSync could not join from that QR.");
+      new Notice(err instanceof Error ? err.message : "Sealed Sync could not join from that QR.");
     }
   }
 
@@ -131,12 +135,12 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
     }
     if (paused) {
       await this.engine.pause("uploads paused");
-      this.setStatus("ObsiSync live · paused");
+      this.setStatus("Sealed Sync live · paused");
       return;
     }
     await this.engine.resume();
     this.realtime?.noteChange();
-    this.setStatus("ObsiSync live");
+    this.setStatus("Sealed Sync live");
   }
 
   async resolveConflict(fileId: string, choice: "local" | "remote"): Promise<void> {
@@ -166,7 +170,7 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
   private async showOutcome(outcome: RealtimeOutcome): Promise<void> {
     if ("error" in outcome) {
       this.settings.lastError = outcome.error;
-      this.setStatus("ObsiSync live · offline");
+      this.setStatus("Sealed Sync live · offline");
       await this.saveSettings();
       return;
     }
@@ -176,15 +180,15 @@ export default class VaultBridgePlugin extends Plugin implements SettingsHost {
     this.settings.lastPushes = report.pushes;
     this.settings.lastPulls = report.pulls;
     if (report.pausedReason) {
-      this.setStatus("ObsiSync live · paused");
+      this.setStatus("Sealed Sync live · paused");
     } else if (report.status === "OFFLINE" || report.errors.length > 0) {
-      this.setStatus("ObsiSync live · offline");
+      this.setStatus("Sealed Sync live · offline");
     } else if (report.conflicts > 0 || report.status === "CONFLICT") {
-      this.setStatus("ObsiSync live · conflict");
+      this.setStatus("Sealed Sync live · conflict");
     } else if (report.pushes > 0 || report.pulls > 0) {
-      this.setStatus("ObsiSync live · syncing");
+      this.setStatus("Sealed Sync live · syncing");
     } else {
-      this.setStatus("ObsiSync live");
+      this.setStatus("Sealed Sync live");
     }
     await this.saveSettings();
   }

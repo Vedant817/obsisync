@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.3
+
+- The directory name is Sealed Sync. The plugin id stays `obsisync`.
+
 ## 0.2.2
 
 - A note keeps its real name. Leftover `.vb-conflict-` copies are folded back into that note.

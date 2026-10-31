@@ -48,7 +48,7 @@ interface UsageWire {
 
 export function renderSettings(container: HTMLElement, host: SettingsHost, redraw: () => void): void {
   container.addClass("obsisync-settings");
-  container.createEl("h2", { text: "ObsiSync" });
+  container.createEl("h2", { text: "Sealed Sync" });
   const ready = Boolean(host.settings.deviceToken && host.settings.vaultId);
   const locked = ready && !host.settings.recoveryPhrase && !host.settings.passphrase;
   container.createEl("p", {
@@ -64,7 +64,7 @@ export function renderSettings(container: HTMLElement, host: SettingsHost, redra
 
   const address = new Setting(container)
     .setName("API address")
-    .setDesc("Already set to the ObsiSync server. A phone on mobile data uses this same address. Reload Obsidian after you change it.");
+    .setDesc("Already set to the Sealed Sync server. A phone on mobile data uses this same address. Reload Obsidian after you change it.");
   address.settingEl.addClass("obsisync-url");
   address.addText((text) => {
     text.setValue(host.settings.serverUrl).onChange(async (value) => {
@@ -109,7 +109,7 @@ function renderJoin(container: HTMLElement, host: SettingsHost): void {
     button.setButtonText("Join from link").setCta().onClick(() => {
       const payload = parsePairingLink(pasted);
       if (!payload) {
-        new Notice("ObsiSync could not read that pairing link.");
+        new Notice("Sealed Sync could not read that pairing link.");
         return;
       }
       host.settings.serverUrl = canonicalServerUrl(payload.serverUrl);
@@ -198,7 +198,7 @@ function renderRecovery(container: HTMLElement, host: SettingsHost, redraw: () =
 function renderInvite(container: HTMLElement, host: SettingsHost, redraw: () => void): void {
   container.createEl("h3", { text: "Pair a second device" });
   container.createEl("p", {
-    text: "Install ObsiSync on the other device first. A code works once and expires ten minutes after you create it.",
+    text: "Install Sealed Sync on the other device first. A code works once and expires ten minutes after you create it.",
   });
   if (host.settings.inviteId && host.settings.inviteCode) {
     container.createEl("h4", { text: "Type these on the other device" });
@@ -404,5 +404,5 @@ function messageOf(body: unknown): string {
   if (body && typeof body === "object" && "message" in body) {
     return String((body as { message: unknown }).message);
   }
-  return "ObsiSync request failed";
+  return "Sealed Sync request failed";
 }

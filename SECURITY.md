@@ -1,6 +1,6 @@
 # Security
 
-ObsiSync encrypts each note on the device with AES-256-GCM before upload. The hosted API stores ciphertext. The vault key and the recovery phrase stay on your devices.
+Sealed Sync encrypts each note on the device with AES-256-GCM before upload. The hosted API stores ciphertext. The vault key and the recovery phrase stay on your devices.
 
 ## Report a vulnerability
 
